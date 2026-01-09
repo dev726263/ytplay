@@ -1,0 +1,20 @@
+{
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "authorization": "SAPISIDHASH 1767922449_7e81eb0ee9e9188c6d785f866ccb40624084fff8_u SAPISID1PHASH 1767922449_7e81eb0ee9e9188c6d785f866ccb40624084fff8_u SAPISID3PHASH 1767922449_7e81eb0ee9e9188c6d785f866ccb40624084fff8_u",
+    "content-type": "application/json",
+    "priority": "u=1, i",
+    "x-browser-channel": "stable",
+    "x-browser-copyright": "Copyright 2026 Google LLC. All Rights reserved.",
+    "x-browser-validation": "AUXUCdutEJ+6gl6bYtz7E2kgIT4=",
+    "x-browser-year": "2026",
+    "x-client-data": "CNOFywE=",
+    "x-goog-authuser": "0",
+    "x-goog-visitor-id": "CgtkU2JCZVZ4VmpUOCj5tYHLBjIKCgJJThIEGgAgHw%3D%3D",
+    "x-origin": "https://music.youtube.com",
+    "x-youtube-bootstrap-logged-in": "true",
+    "x-youtube-client-name": "67",
+    "x-youtube-client-version": "1.20260107.03.00",
+    "cookie": "VISITOR_PRIVACY_METADATA=CgJJThIEGgAgHw%3D%3D; VISITOR_INFO1_LIVE=dSbBeVxVjT8; LOGIN_INFO=AFmmF2swRQIgEvJJDLdCgoVmlw1xNWMZ10IAbwK0oyMObRKS7zv00GwCIQDb1qD_zuuMSNK-Tf0jR_aS4cJ39yJNua5RqJTzKaZqEQ:QUQ3MjNmd2MyTXFRdjAtOUhjM3h2ZUYxQmhhMEtrU1lDNng5X2wtV3hNcm9yeTV1d3pJUFpSX0thRnBLVzgyWDJVZV9IdEhweE5jaUQ5Zm9BV2hXVWNPeEtKN0VrLVN5S0JQbE5kNDdzeXFYNGJuR2s1U01uYkpsYWh2Y2dwcVpnc243WGloWllxQUNjQTQyM3o5RnNIelNxck0yVFU0NEJB; HSID=Aa5XAGUcSe5Pre17S; SSID=AUycumhXS7CsJ5iOm; APISID=dzFwvf9C7K8fz6Tw/Aj8cKI-6De23uL74I; SAPISID=8zXNnVs6UliVVa3q/AqGa7rFckfsa_XPEE; __Secure-1PAPISID=8zXNnVs6UliVVa3q/AqGa7rFckfsa_XPEE; __Secure-3PAPISID=8zXNnVs6UliVVa3q/AqGa7rFckfsa_XPEE; __Secure-YT_TVFAS=t=459134&s=2; DEVICE_INFO=ChxOelUyTURJNU1EZ3hPREkyTkRNNE9UYzJOUT09EJCZrscGGPGYrscG; YSC=Sjk7BISPeo4; __Secure-ROLLOUT_TOKEN=CM2FwNeS0N6vNxD5mO-ukYiLAxij5te1jf2RAw%3D%3D; SID=g.a0005gizx4dNlj1NJLTDMR1Gr0TMWKzUFDH9THeo5fiY-xmoISJoRJ75KG0CcTzjYLqCbbvhXQACgYKAdASARMSFQHGX2MiBG029z28bnzZwEOyNXrHGRoVAUF8yKriAuoRPCYQsOWy-f1I_Z_X0076; __Secure-1PSID=g.a0005gizx4dNlj1NJLTDMR1Gr0TMWKzUFDH9THeo5fiY-xmoISJooWHBR8ZdWCCFGDlMfoKaYgACgYKAQgSARMSFQHGX2Mi11MamXWpMNuAjL33VUTkKBoVAUF8yKpKDgKBqJmQR56pxlH-JHSN0076; __Secure-3PSID=g.a0005gizx4dNlj1NJLTDMR1Gr0TMWKzUFDH9THeo5fiY-xmoISJogz8-oqmoO-MXkkbrckU4nAACgYKAVQSARMSFQHGX2MiFI4sLjEN3keB4YcrIFkv9hoVAUF8yKrLFV3WhNxk0SYoAu0mvxrm0076; __Secure-1PSIDTS=sidts-CjUB7I_69KhMxiUZ9jB76i6tcQ4AvTbzIVM9403m7B4Y7v8dWWElNZcXpIph0kpUVizUoIJzwRAA; __Secure-3PSIDTS=sidts-CjUB7I_69KhMxiUZ9jB76i6tcQ4AvTbzIVM9403m7B4Y7v8dWWElNZcXpIph0kpUVizUoIJzwRAA; _gcl_au=1.1.793275618.1767915242; _ga=GA1.1.1370205058.1767915242; _ga_5JSYX2Q357=GS2.1.s1767915242$o1$g1$t1767915547$j60$l0$h0; CONSISTENCY=APeVyi8AwnxmqUxN5IWYTzdXQZSP1_8YSOp20Usiau9wd4gHrI-UqMUc-mx0DgSlTchv05ee6FE8PxsepObxL99cXeMo4KV6w9pP2_u-GmG7N4lZHLpTWBfv1sDn66pBMhbxy-NR7WzyjcaojYmBoCHl; SIDCC=AKEyXzXE5rzv7UMEJMwfxMYokcU_rAUW307pdmrDp5LVNpKW0gOTN2C1o8vq2ij3Z5TTgej8QtQ; __Secure-1PSIDCC=AKEyXzVxfgRAlX22og4xyXoc6rf5pVLCrbnm6pxFX-mfhyKMTG1ERmwnra38etru_06PRgQ__Mo; __Secure-3PSIDCC=AKEyXzWXZzH5i--ftgLmOcLlmOYjbjCvYU9Q92RPeCYrI87Jwfo2f61OP1ASklZ0mHZI9no9fanA; PREF=volume=100&f6=40000001&f7=4140&tz=America.New_York&library_tab_browse_id=FEmusic_liked_playlists&f5=20000&f4=4000000&repeat=NONE",
+    "Referer": "https://music.youtube.com/watch?v=KgpnfT5bgLY&list=OLAK5uy_nM9BRTZM3YdG9O8DL-I1Mikz6GnxPa2Ig"
+  }

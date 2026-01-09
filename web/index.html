@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ytplay</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="loading" id="loadingOverlay">
+      <div class="loading-card">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loadingText">Connecting...</div>
+      </div>
+    </div>
+    <div class="noise"></div>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">ytplay</span>
+        <span class="brand-sub">prompted radio, local daemon</span>
+      </div>
+      <div class="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">disconnected</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel now" data-stagger>
+        <div class="panel-head">
+          <h1>Now Playing</h1>
+          <span class="pill" id="authPill">auth: off</span>
+        </div>
+        <div class="track">
+          <div class="track-art is-empty">
+            <img id="currentArt" alt="" />
+          </div>
+          <div class="track-info">
+            <div class="track-title" id="currentTitle">-</div>
+            <div class="track-artist" id="currentArtist">-</div>
+            <div class="track-meta" id="currentMeta">playlist idle</div>
+          </div>
+        </div>
+        <div class="controls">
+          <button class="btn" id="pauseBtn">pause</button>
+          <button class="btn" id="nextBtn">next</button>
+          <button class="btn" id="stopBtn">stop</button>
+          <button class="btn ghost" id="likeBtn">like</button>
+          <button class="btn ghost" id="dislikeBtn">dislike</button>
+          <button class="btn ghost" id="refreshBtn">refresh</button>
+        </div>
+        <div class="prompt-line" id="promptLine">Prompt: -</div>
+      </section>
+
+      <section class="panel queue" data-stagger>
+        <div class="panel-head">
+          <h2>Queue</h2>
+          <div class="panel-actions">
+            <span class="pill" id="queueCount">0 tracks</span>
+            <button class="btn ghost tiny" id="queueRefreshBtn" type="button">refresh</button>
+          </div>
+        </div>
+        <ol class="queue-list" id="queueList"></ol>
+      </section>
+
+      <section class="panel prompt" data-stagger>
+        <div class="panel-head">
+          <h2>New Prompt</h2>
+          <span class="pill subtle" id="requestState">idle</span>
+        </div>
+        <form id="promptForm" class="prompt-form">
+          <label class="field">
+            <span>Prompt</span>
+            <textarea id="promptInput" rows="3" placeholder="mellow tamil indie-romance, introspective, minimal percussion"></textarea>
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>Seed</span>
+              <input id="seedInput" type="text" placeholder="artist or track" />
+            </label>
+            <label class="field">
+              <span>Mood</span>
+              <input id="moodInput" type="text" placeholder="calm" />
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span>Lang</span>
+              <input id="langInput" type="text" placeholder="ta" />
+            </label>
+            <label class="field">
+              <span>Avoid</span>
+              <input id="avoidInput" type="text" placeholder="remix, live" />
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span>Mix (explore/exploit)</span>
+              <input id="mixInput" type="text" placeholder="50/50" />
+            </label>
+            <label class="field">
+              <span>Vibe</span>
+              <select id="vibeInput">
+                <option value="normal" selected>normal</option>
+                <option value="strict">strict</option>
+                <option value="loose">loose</option>
+              </select>
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field small">
+              <span>Max tracks</span>
+              <input id="maxInput" type="number" min="1" max="50" placeholder="25" />
+            </label>
+            <label class="field small">
+              <span>TTL hours</span>
+              <input id="ttlInput" type="number" min="1" max="240" placeholder="72" />
+            </label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit">play</button>
+            <button class="btn ghost" id="recurateBtn" type="button">re-curate</button>
+            <button class="btn ghost" id="clearBtn" type="button">clear</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel seed" data-stagger>
+        <div class="panel-head">
+          <h2>Seed Details</h2>
+          <span class="pill subtle" id="seedStatus">none</span>
+        </div>
+        <div class="seed-info" id="seedInfo">No seed resolved yet.</div>
+        <div class="seed-next">
+          <div class="seed-label">Seed next (5-10)</div>
+          <ul id="seedNextList"></ul>
+        </div>
+      </section>
+
+      <section class="panel debug" data-stagger>
+        <div class="panel-head">
+          <h2>Debug</h2>
+          <span class="pill subtle">state</span>
+        </div>
+        <pre class="debug-panel" id="debugPanel">No debug info yet.</pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>ytplay web - served by the daemon</span>
+      <span id="lastUpdated">last updated: -</span>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
