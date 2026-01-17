@@ -53,6 +53,7 @@ Optional:
 - `YTP_RECENT_HISTORY_LIMIT=50`
 - `YTP_NO_REPEAT_HOURS=3`
 - `YTP_LOG_LEVEL=INFO`
+- `YTPPLAY_DEBUG_UI=0` (set to 1 to show the Debug panel in the web UI)
 - `YTP_MIX_DEFAULT=50/50`
 - `YTP_VIBE_DEFAULT=normal`
 - `YTP_VIBE_LLM=0`
@@ -109,8 +110,8 @@ Open:
 ```bash
 http://127.0.0.1:17845/ui/
 ```
-Use it to submit prompts, go to previous/pause/play/next/stop, view the queue, and like/dislike tracks. On desktop the Search panel sits in a left sidebar (sticky), with Now Playing/Queue stacked in the center and Debug in a narrower right column; mobile stacks everything in one column. The queue shows the current track plus the next 2 items (max 3), and refreshes on-the-fly as each track advances, with a badge indicating AI vs fallback curation. Queue rows truncate long titles/artists so they never overflow the card, and the queue panel expands with page-level scrolling. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button, and it restores the last known state while connecting. The loading screen surfaces live daemon progress messages during curation. A progress bar shows playback position, and you can scroll on it to seek. The Learning controls let you rate the current track (fit/energy/tempo) to influence future curation. The Env editor at `/ui/env.html` lets you edit `~/.ytplay/.env` and restarts the daemon after saving.
-The Debug panel shows the last curation stats (query counts, skips, and selection totals).
+Use it to submit prompts, go to previous/pause/play/next/stop, view the queue, and like/dislike tracks. On desktop the Search panel sits in a left sidebar (sticky), with Now Playing/Queue stacked in the center and a narrower right column; mobile stacks everything in one column. The queue shows the current track plus the next 9 items (max 10), and refreshes on-the-fly as each track advances, with a badge indicating AI vs fallback curation. Queue rows truncate long titles/artists so they never overflow the card, and the queue panel expands with page-level scrolling. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button, and it restores the last known state while connecting. The loading screen surfaces live daemon progress messages during curation. A progress bar shows playback position, and you can scroll on it to seek. The Learning controls let you rate the current track (fit/energy/tempo) to influence future curation. The Env editor at `/ui/env.html` lets you edit `~/.ytplay/.env` and restarts the daemon after saving.
+The Database panel lists SQLite tables and lets you page through the latest rows. The Debug panel shows the last curation stats (query counts, skips, and selection totals) when enabled via `YTPPLAY_DEBUG_UI=1`.
 
 > Tip: after install, you can add `bin/` to your PATH or symlink `ytplay` into `~/bin`.
 

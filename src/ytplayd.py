@@ -2,7 +2,7 @@
 import os, sys, json, time, sqlite3, subprocess, threading, shutil, mimetypes, logging, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from typing import List, Dict, Any, Optional, Set
 
 from openai import OpenAI
@@ -48,6 +48,9 @@ def load_env_file_override(path: str):
             v = v.strip().strip('"').strip("'")
             os.environ[k] = v
 
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
 # Load env from ~/.ytplay/.env by default
 DEFAULT_ENV = expanduser("~/.ytplay/.env")
 load_env_file(os.getenv("YTP_ENV_FILE", DEFAULT_ENV))
@@ -78,6 +81,7 @@ MIX_DEFAULT = os.getenv("YTP_MIX_DEFAULT", "50/50")
 VIBE_DEFAULT = os.getenv("YTP_VIBE_DEFAULT", "normal")
 VIBE_LLM_ENABLED = os.getenv("YTP_VIBE_LLM", "0") == "1"
 VIBE_LLM_MODEL = os.getenv("YTP_VIBE_LLM_MODEL", MODEL)
+DEBUG_UI_ENABLED = env_flag("YTPPLAY_DEBUG_UI", "0")
 
 LOG_LEVEL = os.getenv("YTP_LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -268,6 +272,68 @@ def db() -> sqlite3.Connection:
     """)
     con.commit()
     return con
+
+def list_db_tables() -> List[str]:
+    con = db()
+    rows = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+    ).fetchall()
+    con.close()
+    return [row[0] for row in rows]
+
+def quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+def db_table_info(con: sqlite3.Connection, table: str) -> tuple[List[str], List[str]]:
+    rows = con.execute(f"PRAGMA table_info({quote_ident(table)});").fetchall()
+    columns = [row[1] for row in rows]
+    pk_cols = [row[1] for row in rows if row[5]]
+    return columns, pk_cols
+
+def db_order_by(columns: List[str], pk_cols: List[str]) -> tuple[str, str]:
+    if "created_at" in columns:
+        return "created_at DESC", f"{quote_ident('created_at')} DESC"
+    if "updated_at" in columns:
+        return "updated_at DESC", f"{quote_ident('updated_at')} DESC"
+    if pk_cols:
+        col = pk_cols[0]
+        return f"{col} DESC", f"{quote_ident(col)} DESC"
+    return "rowid DESC", "rowid DESC"
+
+def serialize_db_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.hex()
+    return value
+
+def fetch_table_rows(table: str, limit: int, offset: int) -> Dict[str, Any]:
+    con = db()
+    columns, pk_cols = db_table_info(con, table)
+    order_label, order_sql = db_order_by(columns, pk_cols)
+    total = con.execute(f"SELECT COUNT(*) FROM {quote_ident(table)};").fetchone()[0]
+    rows_raw = con.execute(
+        f"SELECT * FROM {quote_ident(table)} ORDER BY {order_sql} LIMIT ? OFFSET ?;",
+        (limit, offset),
+    ).fetchall()
+    con.close()
+    rows: List[Dict[str, Any]] = []
+    for row in rows_raw:
+        item = {col: serialize_db_value(val) for col, val in zip(columns, row)}
+        rows.append(item)
+    return {
+        "table": table,
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+        "rows": rows,
+        "columns": columns,
+        "order_by": order_label,
+    }
 
 def auth_candidates() -> List[str]:
     candidates: List[str] = []
@@ -1982,6 +2048,7 @@ def state_snapshot() -> Dict[str, Any]:
         "prompt": last_prompt,
         "extras": last_extras,
         "queue": last_queue,
+        "debug_ui": DEBUG_UI_ENABLED,
         "current_index": pos,
         "current": current,
         "paused": paused,
@@ -2072,6 +2139,27 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.path == "/env":
                 return self._json(200, {"ok": True, **read_env_file()})
+
+            if p.path == "/api/db/tables":
+                return self._json(200, {"ok": True, "tables": list_db_tables()})
+
+            if p.path.startswith("/api/db/table/") and p.path.endswith("/rows"):
+                raw_name = p.path[len("/api/db/table/"):-len("/rows")]
+                table = unquote(raw_name).strip()
+                tables = list_db_tables()
+                if not table or table not in tables:
+                    return self._json(404, {"ok": False, "error": "unknown table"})
+                limit_raw = (qs.get("limit") or [None])[0]
+                offset_raw = (qs.get("offset") or [None])[0]
+                try:
+                    limit = int(limit_raw) if limit_raw is not None else 10
+                    offset = int(offset_raw) if offset_raw is not None else 0
+                except ValueError:
+                    return self._json(400, {"ok": False, "error": "invalid pagination"})
+                limit = max(1, min(50, limit))
+                offset = max(0, offset)
+                payload = fetch_table_rows(table, limit, offset)
+                return self._json(200, {"ok": True, **payload})
 
             if p.path == "/play":
                 prompt = (qs.get("q") or [""])[0].strip()

@@ -101,7 +101,7 @@
               <div class="field-row">
                 <label class="field small">
                   <span>Max tracks</span>
-                  <input id="maxInput" type="number" min="1" max="3" placeholder="3" />
+                  <input id="maxInput" type="number" min="1" max="10" placeholder="3" />
                 </label>
                 <label class="field small">
                   <span>TTL hours</span>
@@ -249,13 +249,25 @@
         </section>
       </div>
 
-      <section class="panel debug" data-stagger>
-        <div class="panel-head">
-          <h2>Debug</h2>
-          <span class="pill subtle">state</span>
-        </div>
-        <pre class="debug-panel" id="debugPanel">No debug info yet.</pre>
-      </section>
+      <aside class="side-panels" id="sidePanels">
+        <section class="panel database" data-stagger id="dbPanel">
+          <div class="panel-head">
+            <h2>Database</h2>
+            <span class="pill subtle" id="dbStatus">loading...</span>
+          </div>
+          <div class="db-list" id="dbTables">
+            <div class="db-empty">Loading tables...</div>
+          </div>
+        </section>
+
+        <section class="panel debug" data-stagger id="debugPanelWrap">
+          <div class="panel-head">
+            <h2>Debug</h2>
+            <span class="pill subtle">state</span>
+          </div>
+          <pre class="debug-panel" id="debugPanel">No debug info yet.</pre>
+        </section>
+      </aside>
     </main>
 
     <footer class="footer">

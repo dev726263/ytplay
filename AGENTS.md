@@ -4,3 +4,5 @@
 “Keep CLI UX and web UI stable”
 "Env editor reads/writes ~/.ytplay/.env; never log env contents"
 "Update AGENTS.md file as it seems fit to manage the ever growing requirements and code and logic"
+"Debug UI elements are gated by YTPPLAY_DEBUG_UI (default off)"
+"Add test cases for any new features and make sure for any changes of the feature the tests are not breaking"
