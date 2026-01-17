@@ -7,20 +7,23 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <div class="loading" id="loadingOverlay">
-      <div class="loading-card">
-        <div class="loading-header">
-          <div class="spinner"></div>
-          <div class="loading-meta">
-            <div class="loading-title">ytplay daemon</div>
-            <div class="loading-text" id="loadingText">Connecting...</div>
+    <div id="overlayRoot">
+      <div class="loading" id="loadingOverlay">
+        <div class="loading-card">
+          <div class="loading-header">
+            <div class="spinner"></div>
+            <div class="loading-meta">
+              <div class="loading-title">ytplay daemon</div>
+              <div class="loading-text" id="loadingText">Connecting...</div>
+            </div>
           </div>
+          <div class="loading-log" id="loadingLog"></div>
         </div>
-        <div class="loading-log" id="loadingLog"></div>
       </div>
     </div>
     <div class="noise"></div>
-    <header class="topbar">
+    <div class="page-shell">
+      <header class="topbar">
       <div class="brand">
         <span class="brand-mark">ytplay</span>
         <span class="brand-sub">prompted radio, local daemon</span>
@@ -270,12 +273,12 @@
       </section>
     </main>
 
-    <footer class="footer">
-      <span>ytplay web - served by the daemon</span>
-      <span id="lastUpdated">last updated: -</span>
-    </footer>
+      <footer class="footer">
+        <span>ytplay web - served by the daemon</span>
+        <span id="lastUpdated">last updated: -</span>
+      </footer>
 
-    <svg class="icon-sprite" aria-hidden="true">
+      <svg class="icon-sprite" aria-hidden="true">
       <symbol id="icon-prev" viewBox="0 0 24 24">
         <path d="M6 5h2v14H6zM20 5l-10 7 10 7V5z"></path>
       </symbol>
@@ -303,8 +306,9 @@
       <symbol id="icon-clear" viewBox="0 0 24 24">
         <path d="M6 6l12 12M18 6L6 18"></path>
       </symbol>
-    </svg>
+      </svg>
 
-    <script type="module" src="app.js"></script>
+      <script type="module" src="app.js"></script>
+    </div>
   </body>
 </html>

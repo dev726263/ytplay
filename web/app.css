@@ -35,12 +35,15 @@ body {
     radial-gradient(circle at 80% 15%, rgba(143, 203, 191, 0.5), transparent 40%),
     radial-gradient(circle at 10% 80%, rgba(241, 170, 145, 0.45), transparent 45%),
     linear-gradient(120deg, #f8f3ea 0%, #efe3d2 48%, #f6efe4 100%);
+}
+
+.page-shell {
   transition: opacity 0.5s ease, transform 0.5s ease;
   opacity: 0;
   transform: translateY(8px);
 }
 
-body.is-ready {
+body.is-ready .page-shell {
   opacity: 1;
   transform: translateY(0);
 }
@@ -141,6 +144,11 @@ body.is-ready {
     transparent 1px,
     transparent 6px
   );
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+body.is-ready .noise {
   opacity: 0.2;
 }
 
