@@ -111,12 +111,19 @@ Lightweight smoke tests (mocked, no network/mpv needed):
 python -m unittest tests/test_smoke.py
 ```
 
+Additional unit coverage:
+
+```bash
+python -m unittest tests/test_db_service.py
+python -m unittest tests/test_status_service.py
+```
+
 ### 6) Web UI
 Open:
 ```bash
 http://127.0.0.1:17845/ui/
 ```
-Use it to submit prompts, go to previous/pause/play/next/stop, view the queue, and like/dislike tracks. On desktop the Search panel sits in a left sidebar (sticky), with Now Playing/Queue stacked in the center and a narrower right column; mobile stacks everything in one column. The queue shows the current track plus the next 9 items (max 10), and refreshes on-the-fly as each track advances, with a badge indicating AI vs fallback curation. Queue rows truncate long titles/artists so they never overflow the card, and the queue panel expands with page-level scrolling. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button, and it restores the last known state while connecting. The loading screen surfaces live daemon progress messages during curation. A progress bar shows playback position, and you can scroll on it to seek. The Learning controls let you rate the current track (fit/energy/tempo) to influence future curation. The Env editor at `/ui/env.html` lets you edit `~/.ytplay/.env` and restarts the daemon after saving.
+Use it to submit prompts, go to previous/pause/play/next/stop, view the queue, and like/dislike tracks. On desktop the Search panel sits in a left sidebar (sticky), with Now Playing/Queue stacked in the center and a narrower right column; mobile stacks everything in one column. The queue shows the current track plus the next 9 items (max 10), and refreshes on-the-fly as each track advances, with a badge indicating AI vs fallback curation. When the daemon is generating and the queue is below target, the list shows placeholder rows with a collapsible AI query payload. Queue rows truncate long titles/artists so they never overflow the card, and the queue panel expands with page-level scrolling. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button, and it restores the last known state while connecting. The loading screen surfaces live daemon progress messages during curation. A progress bar shows playback position, and you can scroll on it to seek. The Learning controls let you rate the current track (fit/energy/tempo) to influence future curation. The Env editor at `/ui/env.html` lets you edit `~/.ytplay/.env` and restarts the daemon after saving.
 When `YTPPLAY_DEBUG_UI=1`, the right column shows the Debug panel, and a full-width Database panel appears at the bottom to browse SQLite tables and page through the latest rows.
 
 > Tip: after install, you can add `bin/` to your PATH or symlink `ytplay` into `~/bin`.
@@ -143,9 +150,12 @@ By default the auth file is saved to `~/.ytplay/headers_auth.json` (or to `heade
 ## Repo layout
 
 - `src/ytplayd.py` — daemon: HTTP API + caching (SQLite) + mpv IPC
+- `src/ytplayd_app/` — daemon modules (routes/services for status + DB)
 - `src/ytplay.py`  — CLI client
 - `scripts/`       — install + launchd helpers
 - `web/`           — web UI (served by the daemon)
+- `web/components/` — UI panels and helpers
+- `web/api/`       — browser API client wrapper
 - `config/.env.example` — template config (no secrets)
 - `bin/ytplay`     — convenience wrapper
 

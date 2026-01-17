@@ -2,11 +2,13 @@
 import os, sys, json, time, sqlite3, subprocess, threading, shutil, mimetypes, logging, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs
 from typing import List, Dict, Any, Optional, Set
 
 from openai import OpenAI
 from ytmusicapi import YTMusic
+from ytplayd_app.routes import db_routes, status_routes
+from ytplayd_app.services import status_service
 
 HOST = "127.0.0.1"
 
@@ -272,68 +274,6 @@ def db() -> sqlite3.Connection:
     """)
     con.commit()
     return con
-
-def list_db_tables() -> List[str]:
-    con = db()
-    rows = con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
-    ).fetchall()
-    con.close()
-    return [row[0] for row in rows]
-
-def quote_ident(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-def db_table_info(con: sqlite3.Connection, table: str) -> tuple[List[str], List[str]]:
-    rows = con.execute(f"PRAGMA table_info({quote_ident(table)});").fetchall()
-    columns = [row[1] for row in rows]
-    pk_cols = [row[1] for row in rows if row[5]]
-    return columns, pk_cols
-
-def db_order_by(columns: List[str], pk_cols: List[str]) -> tuple[str, str]:
-    if "created_at" in columns:
-        return "created_at DESC", f"{quote_ident('created_at')} DESC"
-    if "updated_at" in columns:
-        return "updated_at DESC", f"{quote_ident('updated_at')} DESC"
-    if pk_cols:
-        col = pk_cols[0]
-        return f"{col} DESC", f"{quote_ident(col)} DESC"
-    return "rowid DESC", "rowid DESC"
-
-def serialize_db_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        raw = bytes(value)
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return raw.hex()
-    return value
-
-def fetch_table_rows(table: str, limit: int, offset: int) -> Dict[str, Any]:
-    con = db()
-    columns, pk_cols = db_table_info(con, table)
-    order_label, order_sql = db_order_by(columns, pk_cols)
-    total = con.execute(f"SELECT COUNT(*) FROM {quote_ident(table)};").fetchone()[0]
-    rows_raw = con.execute(
-        f"SELECT * FROM {quote_ident(table)} ORDER BY {order_sql} LIMIT ? OFFSET ?;",
-        (limit, offset),
-    ).fetchall()
-    con.close()
-    rows: List[Dict[str, Any]] = []
-    for row in rows_raw:
-        item = {col: serialize_db_value(val) for col, val in zip(columns, row)}
-        rows.append(item)
-    return {
-        "table": table,
-        "limit": limit,
-        "offset": offset,
-        "total": total,
-        "rows": rows,
-        "columns": columns,
-        "order_by": order_label,
-    }
 
 def auth_candidates() -> List[str]:
     candidates: List[str] = []
@@ -733,6 +673,49 @@ def parse_vibe(raw: Optional[str]) -> str:
     if raw in VIBE_THRESHOLDS:
         return raw
     return "normal"
+
+def build_generation_query(
+    prompt: str,
+    extras: Dict[str, Any],
+    *,
+    max_tracks: Optional[int] = None,
+    ttl_hours: Optional[int] = None,
+    query_count: Optional[int] = None,
+    source: Optional[str] = None,
+    action: Optional[str] = None,
+    phase: Optional[str] = None,
+    cache_hit: Optional[bool] = None,
+) -> Dict[str, Any]:
+    vibe_mode = parse_vibe(extras.get("vibe"))
+    mix_ratio = parse_mix(extras.get("mix"))
+    avoid_all: List[str] = []
+    for term in (extras.get("avoid") or []) + (extras.get("avoid_terms") or []):
+        t = str(term).strip()
+        if t and t not in avoid_all:
+            avoid_all.append(t)
+    payload: Dict[str, Any] = {
+        "prompt": prompt or "",
+        "seed": extras.get("seed") or "",
+        "mood": extras.get("mood") or "",
+        "vibe_mode": vibe_mode,
+        "vibe_threshold": VIBE_THRESHOLDS[vibe_mode],
+        "mix_ratio": mix_ratio,
+        "mix": extras.get("mix") or "",
+        "avoid": avoid_all,
+        "lang": extras.get("lang") or "",
+        "max_queries": int(extras.get("max_queries", 10)),
+        "query_count": query_count,
+        "max_tracks": max_tracks,
+        "queue_target": QUEUE_MAX,
+        "repeat_hours": NO_REPEAT_HOURS,
+        "ttl_hours": ttl_hours if ttl_hours is not None else extras.get("ttl_hours"),
+        "learn_skip_threshold": LEARN_SKIP_THRESHOLD,
+        "source": source,
+        "action": action,
+        "phase": phase,
+        "cache_hit": cache_hit,
+    }
+    return payload
 
 def build_vibe_profile(
     prompt: str,
@@ -1734,6 +1717,7 @@ def current_queue_track(pos: Optional[int] = None) -> Optional[Dict[str, str]]:
         return last_queue[pos]
     return None
 
+
 def record_history(track: Dict[str, str]):
     con = db()
     now = int(time.time())
@@ -1792,14 +1776,42 @@ def build_seed_extras(seed_track: Dict[str, str], action: str) -> Dict[str, Any]
         "avoid": avoid,
     }
 
-def curate_next_track(seed_track: Dict[str, str], action: str) -> Optional[Dict[str, Any]]:
+def curate_next_track(seed_track: Dict[str, str], action: str, gen_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     if not last_prompt:
         return None
     maybe_reload_ytmusic()
     extras = build_seed_extras(seed_track, action)
+    if gen_id is not None:
+        status_service.update_generation(
+            gen_id,
+            query=build_generation_query(
+                last_prompt,
+                extras,
+                max_tracks=1,
+                ttl_hours=int(extras.get("ttl_hours", CACHE_TTL_HOURS)),
+                source="auto_queue",
+                action=action,
+                phase="curate",
+            ),
+        )
     curated = llm_curate(last_prompt, extras)
     queries = curated.get("search_queries") or []
     avoid_terms = curated.get("avoid_terms") or []
+    if gen_id is not None:
+        status_service.update_generation(
+            gen_id,
+            query=build_generation_query(
+                last_prompt,
+                {**extras, "avoid_terms": avoid_terms},
+                max_tracks=1,
+                ttl_hours=int(extras.get("ttl_hours", CACHE_TTL_HOURS)),
+                query_count=len(queries),
+                source="auto_queue",
+                action=action,
+                phase="select",
+            ),
+            error=curated.get("error") if isinstance(curated, dict) else None,
+        )
     if not queries:
         fallback = fallback_queries(last_prompt, extras, int(extras.get("max_queries", 10)))
         if fallback:
@@ -1833,6 +1845,7 @@ def curate_next_track(seed_track: Dict[str, str], action: str) -> Optional[Dict[
 
 def fill_queue_worker(pos: Optional[int], token: int):
     global queue_fill_inflight, last_queue, queue_fill_token
+    gen_id: Optional[int] = None
     try:
         while True:
             with queue_fill_lock:
@@ -1853,7 +1866,22 @@ def fill_queue_worker(pos: Optional[int], token: int):
                 prompt_guard = last_prompt
             if not seed_track:
                 return
-            result = curate_next_track(seed_track, action)
+            if gen_id is None:
+                seed_extras = build_seed_extras(seed_track, action)
+                gen_id = status_service.start_generation(
+                    build_generation_query(
+                        last_prompt,
+                        seed_extras,
+                        max_tracks=1,
+                        ttl_hours=int(seed_extras.get("ttl_hours", CACHE_TTL_HOURS)),
+                        source="auto_queue",
+                        action=action,
+                        phase="curate",
+                    ),
+                    "auto_queue",
+                    phase="curate",
+                )
+            result = curate_next_track(seed_track, action, gen_id)
             if not result:
                 return
             with queue_fill_lock:
@@ -1876,6 +1904,8 @@ def fill_queue_worker(pos: Optional[int], token: int):
                         "queue_len": len(last_queue),
                     }
     finally:
+        if gen_id is not None:
+            status_service.finish_generation(gen_id)
         with queue_fill_lock:
             if token == queue_fill_token:
                 queue_fill_inflight = False
@@ -1922,91 +1952,141 @@ def handle_play(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
     extras = {**extras, "prefetch_extra": PREFETCH_EXTRA}
     logger.info("play: start prompt_len=%d requested=%d prefetch=%d", len(prompt), requested_max, PREFETCH_EXTRA)
     logger.info("play: mix=%s vibe=%s", extras.get("mix"), extras.get("vibe"))
-
-    key = prompt + "\n" + json.dumps(extras, sort_keys=True)
-    cached = cache_get(con, key, ttl_hours)
-    if cached:
-        curated = cached.get("curated", {})
-        queries = curated.get("search_queries") or []
-        avoid_terms = curated.get("avoid_terms") or []
-        logger.info("play: cache hit (%d queries)", len(queries))
-    else:
-        logger.info("play: cache miss")
-        curated = llm_curate(prompt, extras)
-        queries = curated.get("search_queries") or []
-        avoid_terms = curated.get("avoid_terms") or []
-        cached = {"curated": curated}
-        cache_put(con, key, cached)
-
-    if not queries:
-        fallback = fallback_queries(prompt, extras, int(extras.get("max_queries", 10)))
-        if fallback:
-            logger.warning("play: empty queries, using fallback (%d)", len(fallback))
-            queries = fallback
-    curation_source = "openai" if isinstance(curated, dict) and curated.get("source") == "llm" else "fallback"
-
-    extras = {**extras, "avoid_terms": avoid_terms}
-    debug_meta = {
-        "curation_source": curated.get("source") if isinstance(curated, dict) else None,
-        "curation_error": curated.get("error") if isinstance(curated, dict) else None,
-    }
-    tracks, seed_info, seed_next = pick_tracks(
-        yt,
-        prompt,
-        queries,
-        max_tracks=target_max,
-        extras=extras,
-        debug_meta=debug_meta,
+    gen_id = status_service.start_generation(
+        build_generation_query(
+            prompt,
+            extras,
+            max_tracks=target_max,
+            ttl_hours=ttl_hours,
+            source="play",
+            phase="curate",
+        ),
+        "play",
+        phase="curate",
     )
+    gen_error: Optional[str] = None
 
-    resolved_urls, resolved_count = resolve_urls_parallel(tracks, target_max, PREFETCH_WORKERS)
-    tracks_for_play = tracks[:len(resolved_urls)]
-    urls: List[str] = []
-    playable: List[Dict[str, str]] = []
-    if resolved_count == 0 and tracks_for_play:
-        urls = [watch_url(t["videoId"]) for t in tracks_for_play]
-        playable = list(tracks_for_play)
-        logger.warning("play: no stream URLs resolved; falling back to watch URLs")
-    else:
-        for track, url in zip(tracks_for_play, resolved_urls):
-            if url:
-                urls.append(url)
-                playable.append(track)
-    for track in playable:
-        track["curation"] = curation_source
-    if isinstance(last_debug, dict):
-        last_debug["stream_total"] = len(tracks_for_play)
-        last_debug["stream_resolved"] = resolved_count
-        last_debug["stream_fallback"] = resolved_count == 0 and len(tracks_for_play) > 0
-    mpv.load_and_play(urls)
-    logger.info("play: loaded %d tracks", len(playable))
+    try:
+        key = prompt + "\n" + json.dumps(extras, sort_keys=True)
+        cached = cache_get(con, key, ttl_hours)
+        if cached:
+            curated = cached.get("curated", {})
+            queries = curated.get("search_queries") or []
+            avoid_terms = curated.get("avoid_terms") or []
+            logger.info("play: cache hit (%d queries)", len(queries))
+            status_service.update_generation(
+                gen_id,
+                query=build_generation_query(
+                    prompt,
+                    {**extras, "avoid_terms": avoid_terms},
+                    max_tracks=target_max,
+                    ttl_hours=ttl_hours,
+                    query_count=len(queries),
+                    source="play",
+                    phase="select",
+                    cache_hit=True,
+                ),
+                error=curated.get("error") if isinstance(curated, dict) else None,
+                phase="select",
+            )
+        else:
+            logger.info("play: cache miss")
+            curated = llm_curate(prompt, extras)
+            queries = curated.get("search_queries") or []
+            avoid_terms = curated.get("avoid_terms") or []
+            cached = {"curated": curated}
+            cache_put(con, key, cached)
+            status_service.update_generation(
+                gen_id,
+                query=build_generation_query(
+                    prompt,
+                    {**extras, "avoid_terms": avoid_terms},
+                    max_tracks=target_max,
+                    ttl_hours=ttl_hours,
+                    query_count=len(queries),
+                    source="play",
+                    phase="select",
+                    cache_hit=False,
+                ),
+                error=curated.get("error") if isinstance(curated, dict) else None,
+                phase="select",
+            )
 
-    global last_prompt, last_extras, last_queue, last_seed, last_seed_next, last_played_at, last_pos, last_played_track_id, recent_avoid_terms, queue_fill_inflight, queue_fill_token
-    last_prompt = prompt
-    last_extras = extras
-    last_queue = playable
-    for track in playable:
-        register_session_track(track)
-    last_seed = seed_info
-    last_seed_next = seed_next
-    last_played_at = int(time.time())
-    last_pos = 0
-    last_played_track_id = None
-    recent_avoid_terms = []
-    with queue_fill_lock:
-        queue_fill_token += 1
-        queue_fill_inflight = False
+        if not queries:
+            fallback = fallback_queries(prompt, extras, int(extras.get("max_queries", 10)))
+            if fallback:
+                logger.warning("play: empty queries, using fallback (%d)", len(fallback))
+                queries = fallback
+        curation_source = "openai" if isinstance(curated, dict) and curated.get("source") == "llm" else "fallback"
 
-    con.close()
-    return {
-        "ok": True,
-        "count": len(playable),
-        "queue": playable,
-        "prompt": prompt,
-        "seed": seed_info,
-        "seed_next": seed_next,
-        "extras": extras,
-    }
+        extras = {**extras, "avoid_terms": avoid_terms}
+        debug_meta = {
+            "curation_source": curated.get("source") if isinstance(curated, dict) else None,
+            "curation_error": curated.get("error") if isinstance(curated, dict) else None,
+        }
+        tracks, seed_info, seed_next = pick_tracks(
+            yt,
+            prompt,
+            queries,
+            max_tracks=target_max,
+            extras=extras,
+            debug_meta=debug_meta,
+        )
+
+        status_service.update_generation(gen_id, phase="resolve")
+        resolved_urls, resolved_count = resolve_urls_parallel(tracks, target_max, PREFETCH_WORKERS)
+        tracks_for_play = tracks[:len(resolved_urls)]
+        urls: List[str] = []
+        playable: List[Dict[str, str]] = []
+        if resolved_count == 0 and tracks_for_play:
+            urls = [watch_url(t["videoId"]) for t in tracks_for_play]
+            playable = list(tracks_for_play)
+            logger.warning("play: no stream URLs resolved; falling back to watch URLs")
+        else:
+            for track, url in zip(tracks_for_play, resolved_urls):
+                if url:
+                    urls.append(url)
+                    playable.append(track)
+        for track in playable:
+            track["curation"] = curation_source
+        if isinstance(last_debug, dict):
+            last_debug["stream_total"] = len(tracks_for_play)
+            last_debug["stream_resolved"] = resolved_count
+            last_debug["stream_fallback"] = resolved_count == 0 and len(tracks_for_play) > 0
+        mpv.load_and_play(urls)
+        logger.info("play: loaded %d tracks", len(playable))
+
+        global last_prompt, last_extras, last_queue, last_seed, last_seed_next, last_played_at, last_pos, last_played_track_id, recent_avoid_terms, queue_fill_inflight, queue_fill_token
+        last_prompt = prompt
+        last_extras = extras
+        last_queue = playable
+        for track in playable:
+            register_session_track(track)
+        last_seed = seed_info
+        last_seed_next = seed_next
+        last_played_at = int(time.time())
+        last_pos = 0
+        last_played_track_id = None
+        recent_avoid_terms = []
+        with queue_fill_lock:
+            queue_fill_token += 1
+            queue_fill_inflight = False
+
+        return {
+            "ok": True,
+            "count": len(playable),
+            "queue": playable,
+            "prompt": prompt,
+            "seed": seed_info,
+            "seed_next": seed_next,
+            "extras": extras,
+        }
+    except Exception as e:
+        gen_error = str(e)
+        raise
+    finally:
+        con.close()
+        status_service.finish_generation(gen_id, gen_error)
 
 def vote(videoId: str, title: str, artist: str, v: int) -> Dict[str, Any]:
     con = db()
@@ -2140,26 +2220,18 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/env":
                 return self._json(200, {"ok": True, **read_env_file()})
 
-            if p.path == "/api/db/tables":
-                return self._json(200, {"ok": True, "tables": list_db_tables()})
+            if p.path == "/api/status":
+                code, payload = status_routes.handle_status(len(last_queue), QUEUE_MAX)
+                return self._json(code, payload)
 
-            if p.path.startswith("/api/db/table/") and p.path.endswith("/rows"):
-                raw_name = p.path[len("/api/db/table/"):-len("/rows")]
-                table = unquote(raw_name).strip()
-                tables = list_db_tables()
-                if not table or table not in tables:
-                    return self._json(404, {"ok": False, "error": "unknown table"})
-                limit_raw = (qs.get("limit") or [None])[0]
-                offset_raw = (qs.get("offset") or [None])[0]
-                try:
-                    limit = int(limit_raw) if limit_raw is not None else 10
-                    offset = int(offset_raw) if offset_raw is not None else 0
-                except ValueError:
-                    return self._json(400, {"ok": False, "error": "invalid pagination"})
-                limit = max(1, min(50, limit))
-                offset = max(0, offset)
-                payload = fetch_table_rows(table, limit, offset)
-                return self._json(200, {"ok": True, **payload})
+            if p.path == "/api/db/tables":
+                code, payload = db_routes.handle_tables(db)
+                return self._json(code, payload)
+
+            table = db_routes.match_table_rows(p.path)
+            if table:
+                code, payload = db_routes.handle_table_rows(db, table, qs)
+                return self._json(code, payload)
 
             if p.path == "/play":
                 prompt = (qs.get("q") or [""])[0].strip()
