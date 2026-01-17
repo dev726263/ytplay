@@ -1,0 +1,205 @@
+1. Add previous button.
+2. remove the see details in the UI
+3. replace the buttons with icons(or icons with buttons) according to their name/funstion.
+4. Always start from thh previously running state(current song, queue, etc)
+5. redesign queue component:  
+      - the queue needs to refresh proactively and add 1 at a time once the current playing item progresses to next..
+     - max size of 4 items in the queue
+     - add an indeicator in the queue items indicating whether the items was curated by openAI or with fallback logic.
+6. redesign loading window, with displaying log messages displaying the current progress. one liner status message that keeps changing to next status message.
+
+
+
+
+
+Task: Fix the ytplay web UI layout so it never overlaps and the Search panel is a clean left sidebar.
+
+Current issue:
+- Panels overlap (Search card sits on top of Now Playing / Queue).
+- Layout feels “floating” instead of structured.
+
+Goal layout:
+- Two-column desktop layout:
+  - Left: Search panel fixed width (e.g., 360–420px), visually “tucked” with consistent padding/margins.
+  - Right: stacked content (Now Playing on top, Queue below, Debug on the right or as a top-right card).
+- No overlap at any viewport size.
+- Responsive behavior:
+  - >= 1024px: 2-column layout (left sidebar + right content).
+  - < 1024px: single column (Search first, then Now Playing, Queue, Debug).
+- Keep current styling vibe (rounded cards, soft background), but align spacing consistently.
+
+Implementation constraints:
+- Do NOT use absolute positioning for page layout.
+- Use CSS Grid for the overall page layout, and Flex/Grid inside cards as needed.
+- Ensure the right column content never goes underneath the left sidebar.
+- Make Search sidebar optionally sticky (position: sticky; top: 24px) only if it doesn’t break mobile.
+
+Acceptance criteria:
+- Search is always left-aligned and does not cover any other panel.
+- Now Playing / Queue / Debug are fully readable without being obstructed.
+- Works in Chrome + Safari.
+
+Steps:
+1) Identify the main layout container and current positioning rules causing overlap.
+2) Refactor to a top-level grid container (2 cols on desktop, 1 col on mobile).
+3) Adjust card widths, spacing (gap), and remove conflicting absolute/negative margins.
+4) Verify at 1440px, 1024px, 768px, 390px widths.
+
+Output:
+- Provide the exact files changed and a short explanation of the layout approach.
+
+
+
+
+
+
+
+1. Add progress bar for the song being played. add scrolling controls.
+
+
+
+
+
+Refactor the ytplay web UI to a clean dashboard layout using CSS Grid (page-fluid, no overlaps, responsive).
+
+Desktop layout:
+- Root grid: [Search sidebar | Main center | Debug]
+- Search sidebar width: 400–440px and sticky (position: sticky; top: 24px) on desktop only.
+- Center column: stacked cards (Now Playing, then Queue) and should be the largest column.
+- Debug column: smaller than center; keep it readable.
+
+Grid rules:
+- Use grid-template-columns: 420px minmax(560px, 1.55fr) minmax(320px, 0.95fr)
+- gap: 24px
+- align-items: start (critical: prevent vertical stretching)
+- Remove any absolute positioning, negative margins, or transforms used to place cards.
+
+Search column whitespace fix:
+- Ensure Search wrapper/card does NOT have height:100%, min-height:100vh, flex:1, or align-self:stretch.
+- Enforce height: fit-content on Search card.
+- If parent is flex-column, remove any rules that stretch the Search card.
+
+Queue width fix:
+- Make Queue list width: 100%.
+- For each queue item, ensure text container can grow:
+  - If flex: set .text { flex:1; min-width:0; }
+  - If grid: template columns include 1fr for text.
+- Ensure no max-width is applied inside queue rows.
+
+Responsive:
+- <1100px: 2-column layout: [Search | Main], Debug moves below.
+- <820px: single column stack: Search, Now Playing, Queue, Debug.
+- Sticky only on desktop.
+
+Deliverables:
+- Provide a concise explanation of the layout.
+- Provide diffs for the root layout component and stylesheet(s).
+- Include before/after screenshots or at least confirm tested widths.
+
+
+
+
+
+
+
+
+
+
+Bug: Queue overflows in one layout/breakpoint but not in another (see screenshots). Fix queue sizing so it NEVER spills outside its card/container.
+
+What I’m seeing:
+- In the “wider” layout, the Queue content/rows extend beyond the Queue card bounds (overflow).
+- In the “narrower/other” layout, it fits correctly.
+This indicates a responsive CSS rule difference (breakpoint), or a child element with fixed width/min-width that prevents shrinking.
+
+Requirements:
+1) Queue card must contain its content at all viewport widths. No horizontal overflow.
+2) Queue rows must be responsive: text truncates cleanly; nothing forces the row wider than the card.
+3) Fix the root cause (layout rules), not by just hiding things globally.
+
+Investigation steps (do these in order):
+- Locate the Queue container/card + queue item row components and their CSS/Tailwind classes.
+- In DevTools terms: identify which element is the overflow source (the child that exceeds parent width) and which CSS rule changes between the two layouts.
+- Check for: fixed widths, min-width, max-width, flex/grid shrink behavior, absolute positioning, transforms, and any breakpoint-specific styles.
+
+Implementation changes:
+A) Ensure Queue card and its immediate inner wrapper use:
+   - width: 100%;
+   - max-width: 100%;
+   - overflow-x: hidden; (only on the Queue card/wrapper, not the whole page)
+
+B) Fix queue row shrink rules (most common root cause):
+   - If rows use flex: ensure the text region is `flex: 1` AND `min-width: 0`
+   - If rows use grid: ensure the text column is `1fr` AND children have `min-width: 0`
+   - Remove/override any `min-width` on row children that blocks shrinking (e.g., min-width: 500px)
+
+C) Eliminate any fixed/max widths inside queue items:
+   - remove max-width constraints like `max-width: 600px` on item content
+   - ensure images/thumbnails have fixed size but do not force row width (use flex-shrink: 0 on thumb only)
+
+D) Make long text safe:
+   - title/subtitle should use ellipsis truncation:
+     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+   - OR allow wrapping if that matches design, but must not expand width.
+
+E) Ensure the main layout container doesn’t break the Queue:
+   - If parent is grid/flex, apply `min-width: 0` to the center column wrapper and the Queue card wrapper (this is critical in CSS Grid/Flex to allow shrinking).
+   - Confirm breakpoints don’t swap to a layout that drops `min-width: 0` or adds a fixed width.
+
+Acceptance criteria:
+- Test widths: 1440px, 1280px, 1100px, 1024px, 900px, 768px, 390px.
+- Queue never overflows its card at any width.
+- No horizontal scrolling introduced.
+- Layout remains fluid and consistent.
+
+Deliverables:
+- Show exact files changed.
+- Provide code diff(s) for Queue container + Queue item row + any layout wrapper change (esp. min-width:0).
+- Briefly explain which CSS rule caused the overflow and why it differed across the two layouts.
+
+
+
+
+
+
+
+
+1. After pressing next, I'm unable to press any other controls until the next song is refreshed(curated in the backend). the ui should cancel any pending operation and prioritize the latest pressed button.
+2. Add learning inputs for each song to understand and derive the score needed for curation.
+3. Songs should not be repeated in the current session( or 3hours default)
+
+
+
+There is a flaw in the queue refresh logic where the queue items are duplicated(doubting the api's are called with same params consecutivly for the items in the first or second rows in the queue. find and fix the redundant call or correct the call to invoke with correct params.
+
+
+
+Remove the internal scrollbar from the Queue panel.
+
+Current issue:
+- Queue list shows its own vertical scrollbar (overflow-y: auto/scroll), which I do NOT want.
+
+Goal:
+- Queue card should expand to fit its items naturally.
+- Only the PAGE should scroll, not the Queue list.
+- No vertical scrollbar visible inside the Queue card.
+
+Steps:
+1) Find the Queue panel/container and the element that has overflow-y set (likely the queue list wrapper).
+2) Remove any fixed height/max-height that forces internal scrolling (height, max-height, calc(…)).
+3) Set overflow-y: visible (or remove overflow-y entirely) on the queue list wrapper.
+4) Ensure parent layout does not force a fixed height on the center column or the queue card.
+
+Acceptance:
+- Queue shows all items without an internal scrollbar.
+- Scrolling happens on the main page only.
+- Layout remains responsive and does not overlap.
+
+Deliverables:
+- Show files changed + diff.
+- Briefly note what CSS rule caused the scrollbar.
+
+
+Adding a full screen editor page/control to display the contents of the file ~/.ytplay/.env and on saving, restart the application. 
+
+Add dark/light theme with toggle preference selection. Add it in a preference table in database.

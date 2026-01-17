@@ -44,12 +44,14 @@ Set at minimum:
 Optional:
 - `OPENAI_MODEL=gpt-5-mini`
 - `YTP_PORT=17845`
-- `YTP_MAX_TRACKS=25`
+- `YTP_MAX_TRACKS=3`
+- `YTP_QUEUE_MAX=3`
 - `YTP_CACHE_TTL_HOURS=72`
 - `YTP_SEED_NEXT_MAX=10`
 - `YTP_PREFETCH_EXTRA=5` (default; set to 0 to disable prefetch)
 - `YTP_PREFETCH_WORKERS=4`
 - `YTP_RECENT_HISTORY_LIMIT=50`
+- `YTP_NO_REPEAT_HOURS=3`
 - `YTP_LOG_LEVEL=INFO`
 - `YTP_MIX_DEFAULT=50/50`
 - `YTP_VIBE_DEFAULT=normal`
@@ -107,7 +109,7 @@ Open:
 ```bash
 http://127.0.0.1:17845/ui/
 ```
-Use it to submit prompts, pause/play, skip, stop, view the current queue, and like/dislike tracks. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button.
+Use it to submit prompts, go to previous/pause/play/next/stop, view the queue, and like/dislike tracks. On desktop the Search panel sits in a left sidebar (sticky), with Now Playing/Queue stacked in the center and Debug in a narrower right column; mobile stacks everything in one column. The queue shows the current track plus the next 2 items (max 3), and refreshes on-the-fly as each track advances, with a badge indicating AI vs fallback curation. Queue rows truncate long titles/artists so they never overflow the card, and the queue panel expands with page-level scrolling. Queue items are clickable to jump playback, and artwork is shown when available. The UI also supports re-curate (retry) and a queue refresh button, and it restores the last known state while connecting. The loading screen surfaces live daemon progress messages during curation. A progress bar shows playback position, and you can scroll on it to seek. The Learning controls let you rate the current track (fit/energy/tempo) to influence future curation. The Env editor at `/ui/env.html` lets you edit `~/.ytplay/.env` and restarts the daemon after saving.
 The Debug panel shows the last curation stats (query counts, skips, and selection totals).
 
 > Tip: after install, you can add `bin/` to your PATH or symlink `ytplay` into `~/bin`.
@@ -150,6 +152,15 @@ By default the auth file is saved to `~/.ytplay/headers_auth.json` (or to `heade
 
 ---
 
+## Queue behavior
+
+- Queue size is capped by `YTP_QUEUE_MAX` (default 3).
+- As each track advances, ytplayd curates the next track on the fly using the current track as seed plus updated likes/dislikes and recent history.
+- `YTP_MAX_TRACKS` requests are capped to `YTP_QUEUE_MAX`.
+- Tracks are not repeated within the current session or the recent window (`YTP_NO_REPEAT_HOURS`, default 3h) unless the prompt explicitly asks.
+
+---
+
 ## Taste training (likes/dislikes)
 
 The daemon stores simple votes:
@@ -170,6 +181,13 @@ Preference data remains local in SQLite; it is not sent to OpenAI.
 
 ---
 
+## Learning inputs
+
+- The web UI lets you save a per-track fit score plus optional energy/tempo labels.
+- These signals are stored locally and used to bias curation (low scores are skipped; high scores boost preference; energy/tempo can fill in when no mood is provided).
+
+---
+
 ## Vibe lock + exploration
 
 - Exploration stays in the same vibe (no genre whiplash).
@@ -177,7 +195,7 @@ Preference data remains local in SQLite; it is not sent to OpenAI.
 - Default explore/exploit mix is 50/50; adjust with `--mix 60/40` (explore/exploit).
 - Vibe lock thresholds: `strict` (0.80), `normal` (0.70), `loose` (0.60).
 - If a track lacks clear metadata signals, it is scored as neutral (not an automatic fail); stricter modes still filter more.
-- Diversity rules: max 2 tracks per artist in a 10-track window; no repeats within 24h unless the prompt explicitly asks.
+- Diversity rules: max 2 tracks per artist in a 10-track window; no repeats within the recent window (`YTP_NO_REPEAT_HOURS`, default 3h) unless the prompt explicitly asks.
 
 ---
 

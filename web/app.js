@@ -11,13 +11,15 @@ const currentMeta = el("currentMeta");
 const currentArt = el("currentArt");
 const promptLine = el("promptLine");
 const requestState = el("requestState");
-const seedInfo = el("seedInfo");
-const seedStatus = el("seedStatus");
-const seedNextList = el("seedNextList");
 const lastUpdated = el("lastUpdated");
 const loadingOverlay = el("loadingOverlay");
 const loadingText = el("loadingText");
+const loadingLog = el("loadingLog");
 const debugPanel = el("debugPanel");
+const progressInput = el("progressInput");
+const progressElapsed = el("progressElapsed");
+const progressDuration = el("progressDuration");
+const progressWrap = el("progressWrap");
 
 const promptForm = el("promptForm");
 const promptInput = el("promptInput");
@@ -30,6 +32,7 @@ const ttlInput = el("ttlInput");
 const mixInput = el("mixInput");
 const vibeInput = el("vibeInput");
 
+const prevBtn = el("prevBtn");
 const pauseBtn = el("pauseBtn");
 const nextBtn = el("nextBtn");
 const stopBtn = el("stopBtn");
@@ -39,28 +42,116 @@ const refreshBtn = el("refreshBtn");
 const clearBtn = el("clearBtn");
 const recurateBtn = el("recurateBtn");
 const queueRefreshBtn = el("queueRefreshBtn");
+const learningWrap = el("learningWrap");
+const learnScore = el("learnScore");
+const learnScoreValue = el("learnScoreValue");
+const learnEnergy = el("learnEnergy");
+const learnTempo = el("learnTempo");
+const learnSaveBtn = el("learnSaveBtn");
+const learningStatus = el("learningStatus");
 
 let currentTrack = null;
 const API_TIMEOUT_MS = 10000;
 const STATE_TIMEOUT_MS = 5000;
 const PLAY_TIMEOUT_MS = 120000;
+const QUEUE_WINDOW = 3;
+const STATE_STORAGE_KEY = "ytplay:last_state";
 
 let hasLoaded = false;
 let hasAttempted = false;
 let loadingCount = 0;
 let lastState = null;
+let loadingCycle = null;
+let loadingHistory = [];
+let loadingIndex = 0;
+let isSeeking = false;
+let lastSeekAt = 0;
+let controlController = null;
+let controlSeq = 0;
+let lastLearningTrackId = null;
+let learningDirty = false;
+let progressPoll = null;
+let progressLastId = 0;
+let progressActive = false;
+
+const LOADING_MESSAGES = [
+  "Warming up the curator...",
+  "Scanning the stack...",
+  "Picking the next track...",
+  "Resolving stream URLs...",
+  "Syncing the queue...",
+  "Tuning the vibe...",
+];
+
+function renderLoadingLog() {
+  if (!loadingLog) return;
+  loadingLog.innerHTML = "";
+  loadingHistory.forEach((msg, idx) => {
+    const line = document.createElement("div");
+    line.className = "loading-log-line";
+    if (idx === 0) {
+      line.classList.add("is-latest");
+    }
+    line.textContent = msg;
+    loadingLog.appendChild(line);
+  });
+}
+
+function pushLoadingMessage(text) {
+  const msg = String(text || "").trim();
+  if (!msg) return;
+  if (loadingHistory[0] === msg) return;
+  loadingHistory.unshift(msg);
+  loadingHistory = loadingHistory.slice(0, 4);
+  renderLoadingLog();
+}
+
+function setLoadingMessage(text) {
+  if (loadingText) {
+    loadingText.textContent = text;
+  }
+  pushLoadingMessage(text);
+}
+
+function startLoadingCycle() {
+  if (loadingCycle) return;
+  loadingCycle = setInterval(() => {
+    const msg = LOADING_MESSAGES[loadingIndex % LOADING_MESSAGES.length];
+    loadingIndex += 1;
+    setLoadingMessage(msg);
+  }, 1400);
+}
+
+function stopLoadingCycle(reset = true) {
+  if (loadingCycle) {
+    clearInterval(loadingCycle);
+    loadingCycle = null;
+  }
+  loadingIndex = 0;
+  if (reset) {
+    loadingHistory = [];
+    renderLoadingLog();
+  }
+}
 
 function setLoading(active, text) {
   if (active) {
+    const wasIdle = loadingCount === 0;
     loadingCount += 1;
     if (text) {
-      loadingText.textContent = text;
+      setLoadingMessage(text);
     }
     loadingOverlay.classList.add("is-active");
+    if (wasIdle) {
+      startLoadingCycle();
+      startProgressPoll();
+    }
   } else {
     loadingCount = Math.max(0, loadingCount - 1);
     if (loadingCount === 0) {
       loadingOverlay.classList.remove("is-active");
+      stopLoadingCycle();
+      stopProgressPoll();
     }
   }
 }
@@ -75,11 +166,178 @@ function setRequestState(text, isError = false) {
   requestState.classList.toggle("error", isError);
 }
 
+function beginControlRequest() {
+  if (controlController) {
+    controlController.abort();
+  }
+  controlController = new AbortController();
+  controlSeq += 1;
+  return { signal: controlController.signal, seq: controlSeq };
+}
+
+function isAbortError(err) {
+  return err && err.message === "request aborted";
+}
+
+function applyProgressLines(lines) {
+  if (!Array.isArray(lines)) return;
+  const newLines = lines.filter(
+    (line) => line && typeof line.id === "number" && line.id > progressLastId
+  );
+  if (!newLines.length) return;
+  if (!progressActive) {
+    progressActive = true;
+    stopLoadingCycle(false);
+  }
+  newLines.forEach((line) => {
+    if (line && line.msg) {
+      pushLoadingMessage(line.msg);
+    }
+  });
+  const latest = newLines[newLines.length - 1];
+  if (latest && latest.msg && loadingText) {
+    loadingText.textContent = latest.msg;
+  }
+  if (latest && typeof latest.id === "number") {
+    progressLastId = Math.max(progressLastId, latest.id);
+  }
+}
+
+async function refreshProgress(reset = false) {
+  try {
+    const data = await api("/progress", {}, STATE_TIMEOUT_MS);
+    if (!data || !Array.isArray(data.lines)) return;
+    if (reset) {
+      if (typeof data.latest_id === "number") {
+        progressLastId = data.latest_id;
+      }
+      return;
+    }
+    applyProgressLines(data.lines);
+    if (typeof data.latest_id === "number" && data.latest_id > progressLastId) {
+      progressLastId = data.latest_id;
+    }
+  } catch (err) {
+    return;
+  }
+}
+
+function startProgressPoll() {
+  if (progressPoll) return;
+  progressActive = false;
+  refreshProgress(true);
+  progressPoll = setInterval(() => refreshProgress(false), 1200);
+}
+
+function stopProgressPoll() {
+  if (progressPoll) {
+    clearInterval(progressPoll);
+    progressPoll = null;
+  }
+  progressLastId = 0;
+  progressActive = false;
+}
+
+function setLearningStatus(text, isError = false) {
+  if (!learningStatus) return;
+  learningStatus.textContent = text;
+  learningStatus.classList.toggle("error", isError);
+}
+
+function setLearningEnabled(enabled) {
+  if (learningWrap) {
+    learningWrap.classList.toggle("is-disabled", !enabled);
+  }
+  if (learnScore) learnScore.disabled = !enabled;
+  if (learnEnergy) learnEnergy.disabled = !enabled;
+  if (learnTempo) learnTempo.disabled = !enabled;
+  if (learnSaveBtn) learnSaveBtn.disabled = !enabled;
+}
+
+function markLearningDirty() {
+  learningDirty = true;
+  setLearningStatus("unsaved", false);
+}
+
+function renderLearning(track, learning) {
+  if (!learnScore || !learnEnergy || !learnTempo) return;
+  const trackId = track && track.videoId ? track.videoId : null;
+  const hasTrack = Boolean(trackId);
+  setLearningEnabled(hasTrack);
+  if (!hasTrack) {
+    lastLearningTrackId = null;
+    learningDirty = false;
+    learnScore.value = "50";
+    if (learnScoreValue) {
+      learnScoreValue.textContent = "50%";
+    }
+    learnEnergy.value = "";
+    learnTempo.value = "";
+    setLearningStatus("no track", false);
+    return;
+  }
+  if (trackId === lastLearningTrackId && learningDirty) {
+    return;
+  }
+  lastLearningTrackId = trackId;
+  const scoreValue =
+    learning && typeof learning.score === "number" ? Math.round(learning.score * 100) : 50;
+  learnScore.value = String(scoreValue);
+  if (learnScoreValue) {
+    learnScoreValue.textContent = `${scoreValue}%`;
+  }
+  learnEnergy.value = (learning && learning.energy) || "";
+  learnTempo.value = (learning && learning.tempo) || "";
+  learningDirty = false;
+  setLearningStatus(learning ? "saved" : "unsaved", false);
+}
+
 function formatTrack(track) {
   if (!track) return "-";
   const title = track.title || "Unknown";
   const artist = track.artist || "Unknown";
   return `${title} - ${artist}`;
+}
+
+function formatTime(totalSeconds) {
+  if (typeof totalSeconds !== "number" || Number.isNaN(totalSeconds) || totalSeconds < 0) {
+    return "0:00";
+  }
+  const seconds = Math.floor(totalSeconds);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  const secs = seconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function renderProgress(position, duration) {
+  if (!progressInput || !progressElapsed || !progressDuration) return;
+  const hasDuration = typeof duration === "number" && duration > 0 && Number.isFinite(duration);
+  const safePos = typeof position === "number" && position >= 0 && Number.isFinite(position) ? position : 0;
+  if (!hasDuration) {
+    progressInput.disabled = true;
+    progressInput.max = "0";
+    progressInput.value = "0";
+    progressInput.style.setProperty("--progress", "0%");
+    progressElapsed.textContent = "0:00";
+    progressDuration.textContent = "0:00";
+    return;
+  }
+  const max = Math.floor(duration);
+  const value = Math.min(Math.floor(safePos), max);
+  progressInput.disabled = false;
+  progressInput.max = String(max);
+  if (!isSeeking) {
+    progressInput.value = String(value);
+  }
+  const percent = max > 0 ? (value / max) * 100 : 0;
+  progressInput.style.setProperty("--progress", `${percent}%`);
+  progressElapsed.textContent = formatTime(isSeeking ? Number(progressInput.value) : value);
+  progressDuration.textContent = formatTime(max);
 }
 
 function setArt(imgEl, url) {
@@ -124,24 +382,100 @@ function renderPromptLine(prompt, seed) {
   }
 }
 
-function renderQueue(queue, currentIndex) {
+function storeState(data) {
+  try {
+    const payload = { saved_at: Date.now(), data };
+    localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    return;
+  }
+}
+
+function loadStoredState() {
+  try {
+    const raw = localStorage.getItem(STATE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.data) return null;
+    return parsed;
+  } catch (err) {
+    return null;
+  }
+}
+
+function applyState(data, options = {}) {
+  const previous = lastState;
+  lastState = data;
+  const currentIndex = typeof data.current_index === "number" ? data.current_index : 0;
+  const source =
+    data &&
+    data.debug &&
+    data.debug.curation_source &&
+    String(data.debug.curation_source).toLowerCase() === "llm"
+      ? "openai"
+      : "fallback";
+  renderQueue(data.queue, currentIndex, previous && previous.queue, source);
+  renderNowPlaying(data.current, data.paused, currentIndex);
+  renderLearning(data.current, data.learning);
+  renderProgress(data.position, data.duration);
+  renderPromptLine(data.prompt, data.seed);
+  if (debugPanel) {
+    if (data.debug && Object.keys(data.debug).length > 0) {
+      debugPanel.textContent = JSON.stringify(data.debug, null, 2);
+    } else {
+      debugPanel.textContent = "No debug info yet.";
+    }
+  }
+  if (pauseBtn) {
+    pauseBtn.classList.toggle("is-paused", Boolean(data.paused));
+    const label = pauseBtn.querySelector(".btn-label");
+    if (label) {
+      //label.textContent = data.paused ? "resume" : "pause";
+    }
+  }
+  if (authPill) {
+    authPill.textContent = data.auth ? "auth: on" : "auth: off";
+  }
+  if (lastUpdated) {
+    const stamp = options.savedAt ? new Date(options.savedAt) : new Date();
+    const label = options.cached ? "restored" : "last updated";
+    lastUpdated.textContent = `${label}: ${stamp.toLocaleTimeString()}`;
+  }
+}
+
+function normalizeSource(source) {
+  return source === "openai" ? "openai" : "fallback";
+}
+
+function renderQueue(queue, currentIndex, previousQueue, defaultSource) {
   queueList.innerHTML = "";
   if (!queue || queue.length === 0) {
     queueCount.textContent = "0 tracks";
+    const empty = document.createElement("li");
+    empty.className = "queue-empty";
+    empty.textContent = "queue empty";
+    queueList.appendChild(empty);
     return;
   }
-  queueCount.textContent = `${queue.length} tracks`;
-  queue.forEach((track, idx) => {
+  const startIndex = typeof currentIndex === "number" && currentIndex >= 0 ? currentIndex : 0;
+  const visible = queue.slice(startIndex, startIndex + QUEUE_WINDOW);
+  const prevIds = new Set((previousQueue || []).map((track) => track.videoId));
+  queueCount.textContent = `${visible.length} of ${queue.length}`;
+  visible.forEach((track, offset) => {
+    const globalIndex = startIndex + offset;
     const li = document.createElement("li");
-    li.dataset.index = String(idx);
+    li.dataset.index = String(globalIndex);
     li.setAttribute("role", "button");
     li.tabIndex = 0;
-    if (idx === currentIndex) {
+    if (globalIndex === currentIndex) {
       li.classList.add("is-current");
+    }
+    if (!prevIds.has(track.videoId)) {
+      li.classList.add("is-new");
     }
     const index = document.createElement("div");
     index.className = "queue-index";
-    index.textContent = String(idx + 1).padStart(2, "0");
+    index.textContent = String(globalIndex + 1).padStart(2, "0");
     const art = document.createElement("div");
     art.className = "queue-art";
     if (!track.thumbnail) {
@@ -154,14 +488,27 @@ function renderQueue(queue, currentIndex) {
     }
     art.appendChild(img);
     const content = document.createElement("div");
+    content.className = "queue-content";
     const title = document.createElement("div");
     title.className = "queue-title";
     title.textContent = track.title || "Unknown";
     const artist = document.createElement("div");
     artist.className = "queue-artist";
     artist.textContent = track.artist || "Unknown";
+    const tags = document.createElement("div");
+    tags.className = "queue-tags";
+    const status = document.createElement("span");
+    status.className = "queue-tag status";
+    status.textContent = globalIndex === currentIndex ? "now" : "next";
+    const source = normalizeSource(track.curation || defaultSource);
+    const sourceTag = document.createElement("span");
+    sourceTag.className = `queue-tag source is-${source}`;
+    sourceTag.textContent = source === "openai" ? "ai" : "fallback";
+    tags.appendChild(status);
+    tags.appendChild(sourceTag);
     content.appendChild(title);
     content.appendChild(artist);
+    content.appendChild(tags);
     li.appendChild(index);
     li.appendChild(art);
     li.appendChild(content);
@@ -169,30 +516,8 @@ function renderQueue(queue, currentIndex) {
   });
 }
 
-function renderSeed(seed, seedNext) {
-  if (!seed || !seed.title) {
-    seedInfo.textContent = "No seed resolved yet.";
-    seedStatus.textContent = "none";
-  } else {
-    seedInfo.textContent = `Seeded from: ${formatTrack(seed)}`;
-    seedStatus.textContent = "active";
-  }
 
-  seedNextList.innerHTML = "";
-  if (!seedNext || seedNext.length === 0) {
-    const li = document.createElement("li");
-    li.textContent = "No seed followups yet.";
-    seedNextList.appendChild(li);
-    return;
-  }
-  seedNext.forEach((track) => {
-    const li = document.createElement("li");
-    li.textContent = formatTrack(track);
-    seedNextList.appendChild(li);
-  });
-}
-
-async function api(path, params = {}, timeoutMs = API_TIMEOUT_MS) {
+async function api(path, params = {}, timeoutMs = API_TIMEOUT_MS, options = {}) {
   const url = new URL(path, window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
     if (value !== null && value !== undefined && String(value).trim() !== "") {
@@ -200,6 +525,13 @@ async function api(path, params = {}, timeoutMs = API_TIMEOUT_MS) {
     }
   });
   const controller = new AbortController();
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+  }
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url.toString(), { signal: controller.signal });
@@ -210,6 +542,9 @@ async function api(path, params = {}, timeoutMs = API_TIMEOUT_MS) {
     return data;
   } catch (err) {
     if (err && err.name === "AbortError") {
+      if (options.signal && options.signal.aborted) {
+        throw new Error("request aborted");
+      }
       throw new Error("request timed out");
     }
     throw err;
@@ -218,31 +553,24 @@ async function api(path, params = {}, timeoutMs = API_TIMEOUT_MS) {
   }
 }
 
-async function refreshState() {
+async function refreshState(options = {}) {
   const showLoading = !hasAttempted;
   try {
     if (showLoading) {
       setLoading(true, "Connecting...");
     }
-    const data = await api("/state", {}, STATE_TIMEOUT_MS);
-    lastState = data;
-    setStatus(true, "daemon online");
-    authPill.textContent = data.auth ? "auth: on" : "auth: off";
-    pauseBtn.textContent = data.paused ? "resume" : "pause";
-    renderQueue(data.queue, data.current_index);
-    renderNowPlaying(data.current, data.paused, data.current_index || 0);
-    renderPromptLine(data.prompt, data.seed);
-    renderSeed(data.seed, data.seed_next);
-    if (debugPanel) {
-      if (data.debug && Object.keys(data.debug).length > 0) {
-        debugPanel.textContent = JSON.stringify(data.debug, null, 2);
-      } else {
-        debugPanel.textContent = "No debug info yet.";
-      }
+    const data = await api("/state", {}, STATE_TIMEOUT_MS, options.signal ? { signal: options.signal } : {});
+    if (options.guardSeq && options.guardSeq !== controlSeq) {
+      return;
     }
-    lastUpdated.textContent = `last updated: ${new Date().toLocaleTimeString()}`;
+    setStatus(true, "daemon online");
+    applyState(data);
+    storeState(data);
     hasLoaded = true;
   } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
     setStatus(false, "daemon offline");
     currentMeta.textContent = "daemon not reachable";
     if (debugPanel) {
@@ -283,9 +611,8 @@ async function playWithParams(params, label) {
     setLoading(true, "Curating...");
     const data = await api("/play", params, PLAY_TIMEOUT_MS);
     setRequestState(`playing ${data.count} tracks`, false);
-    renderQueue(data.queue, 0);
+    renderQueue(data.queue, 0, null, "fallback");
     renderPromptLine(data.prompt, data.seed);
-    renderSeed(data.seed, data.seed_next);
     await refreshState();
   } catch (err) {
     setRequestState(err.message || "request failed", true);
@@ -303,15 +630,29 @@ async function recuratePlay() {
   await playWithParams(buildPlayParams(true), "re-curating...");
 }
 
-async function sendControl(path, label) {
+async function runControl(path, params, label) {
+  const request = beginControlRequest();
   setRequestState(label, false);
   try {
-    await api(path);
-    await refreshState();
+    await api(path, params, API_TIMEOUT_MS, { signal: request.signal });
+    if (request.seq !== controlSeq) {
+      return;
+    }
+    await refreshState({ signal: request.signal, guardSeq: request.seq });
+    if (request.seq !== controlSeq) {
+      return;
+    }
     setRequestState("idle", false);
   } catch (err) {
+    if (isAbortError(err) || request.seq !== controlSeq) {
+      return;
+    }
     setRequestState(err.message || "request failed", true);
   }
+}
+
+async function sendControl(path, label) {
+  await runControl(path, {}, label);
 }
 
 function clearForm() {
@@ -327,14 +668,7 @@ function clearForm() {
 }
 
 async function playIndex(index) {
-  setRequestState(`playing #${index + 1}`, false);
-  try {
-    await api("/play_index", { i: index });
-    await refreshState();
-    setRequestState("idle", false);
-  } catch (err) {
-    setRequestState(err.message || "request failed", true);
-  }
+  await runControl("/play_index", { i: index }, `playing #${index + 1}`);
 }
 
 async function voteCurrent(voteValue) {
@@ -355,6 +689,33 @@ async function voteCurrent(voteValue) {
   }
 }
 
+async function saveLearning() {
+  if (!currentTrack || !currentTrack.videoId) {
+    setLearningStatus("no track", true);
+    return;
+  }
+  const scoreValue = learnScore ? Number(learnScore.value) : NaN;
+  const payload = {
+    id: currentTrack.videoId,
+    title: currentTrack.title || "",
+    artist: currentTrack.artist || "",
+    score: Number.isNaN(scoreValue) ? "" : scoreValue,
+    energy: learnEnergy ? learnEnergy.value : "",
+    tempo: learnTempo ? learnTempo.value : "",
+  };
+  setLearningStatus("saving...", false);
+  try {
+    await api("/learn", payload);
+    learningDirty = false;
+    setLearningStatus("saved", false);
+  } catch (err) {
+    if (isAbortError(err)) {
+      return;
+    }
+    setLearningStatus(err.message || "save failed", true);
+  }
+}
+
 function addStagger() {
   const panels = document.querySelectorAll("[data-stagger]");
   panels.forEach((panel, idx) => {
@@ -362,15 +723,85 @@ function addStagger() {
   });
 }
 
+function initProgressControls() {
+  if (!progressInput || !progressWrap) return;
+  progressInput.addEventListener("input", () => {
+    isSeeking = true;
+    const max = Number(progressInput.max);
+    const value = Number(progressInput.value);
+    const percent = max > 0 ? (value / max) * 100 : 0;
+    progressInput.style.setProperty("--progress", `${percent}%`);
+    if (progressElapsed) {
+      progressElapsed.textContent = formatTime(value);
+    }
+  });
+  progressInput.addEventListener("change", async () => {
+    const value = Number(progressInput.value);
+    isSeeking = false;
+    if (!Number.isNaN(value)) {
+      try {
+        await api("/seek", { pos: value });
+      } catch (err) {
+        setRequestState(err.message || "seek failed", true);
+      }
+    }
+  });
+  progressWrap.addEventListener(
+    "wheel",
+    async (event) => {
+      if (!progressInput || progressInput.disabled) return;
+      event.preventDefault();
+      const now = Date.now();
+      if (now - lastSeekAt < 200) return;
+      lastSeekAt = now;
+      const delta = event.deltaY > 0 ? 5 : -5;
+      try {
+        await api("/seek", { delta });
+      } catch (err) {
+        setRequestState(err.message || "seek failed", true);
+      }
+    },
+    { passive: false }
+  );
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   addStagger();
+  initProgressControls();
   document.body.classList.add("is-ready");
+  const cached = loadStoredState();
+  if (cached && cached.data) {
+    applyState(cached.data, { cached: true, savedAt: cached.saved_at });
+    setStatus(false, "restored");
+    hasLoaded = true;
+    hasAttempted = true;
+  }
   promptForm.addEventListener("submit", submitPlay);
+  if (prevBtn) {
+    prevBtn.addEventListener("click", () => sendControl("/prev", "previous track"));
+  }
   pauseBtn.addEventListener("click", () => sendControl("/pause", "toggling pause"));
   nextBtn.addEventListener("click", () => sendControl("/next", "skipping"));
   stopBtn.addEventListener("click", () => sendControl("/stop", "stopping"));
   likeBtn.addEventListener("click", () => voteCurrent(1));
   dislikeBtn.addEventListener("click", () => voteCurrent(-1));
+  if (learnScore) {
+    learnScore.addEventListener("input", () => {
+      if (learnScoreValue) {
+        learnScoreValue.textContent = `${learnScore.value}%`;
+      }
+      markLearningDirty();
+    });
+  }
+  if (learnEnergy) {
+    learnEnergy.addEventListener("change", () => markLearningDirty());
+  }
+  if (learnTempo) {
+    learnTempo.addEventListener("change", () => markLearningDirty());
+  }
+  if (learnSaveBtn) {
+    learnSaveBtn.addEventListener("click", () => saveLearning());
+  }
   refreshBtn.addEventListener("click", () => refreshState());
   if (queueRefreshBtn) {
     queueRefreshBtn.addEventListener("click", () => refreshState());

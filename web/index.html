@@ -9,8 +9,14 @@
   <body>
     <div class="loading" id="loadingOverlay">
       <div class="loading-card">
-        <div class="spinner"></div>
-        <div class="loading-text" id="loadingText">Connecting...</div>
+        <div class="loading-header">
+          <div class="spinner"></div>
+          <div class="loading-meta">
+            <div class="loading-title">ytplay daemon</div>
+            <div class="loading-text" id="loadingText">Connecting...</div>
+          </div>
+        </div>
+        <div class="loading-log" id="loadingLog"></div>
       </div>
     </div>
     <div class="noise"></div>
@@ -19,123 +25,229 @@
         <span class="brand-mark">ytplay</span>
         <span class="brand-sub">prompted radio, local daemon</span>
       </div>
-      <div class="status">
-        <span class="dot" id="statusDot"></span>
-        <span id="statusText">disconnected</span>
+      <div class="topbar-actions">
+        <div class="status">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">disconnected</span>
+        </div>
+        <a class="btn ghost tiny" href="/ui/env.html">env</a>
       </div>
     </header>
 
     <main class="layout">
-      <section class="panel now" data-stagger>
-        <div class="panel-head">
-          <h1>Now Playing</h1>
-          <span class="pill" id="authPill">auth: off</span>
-        </div>
-        <div class="track">
-          <div class="track-art is-empty">
-            <img id="currentArt" alt="" />
-          </div>
-          <div class="track-info">
-            <div class="track-title" id="currentTitle">-</div>
-            <div class="track-artist" id="currentArtist">-</div>
-            <div class="track-meta" id="currentMeta">playlist idle</div>
-          </div>
-        </div>
-        <div class="controls">
-          <button class="btn" id="pauseBtn">pause</button>
-          <button class="btn" id="nextBtn">next</button>
-          <button class="btn" id="stopBtn">stop</button>
-          <button class="btn ghost" id="likeBtn">like</button>
-          <button class="btn ghost" id="dislikeBtn">dislike</button>
-          <button class="btn ghost" id="refreshBtn">refresh</button>
-        </div>
-        <div class="prompt-line" id="promptLine">Prompt: -</div>
-      </section>
-
-      <section class="panel queue" data-stagger>
-        <div class="panel-head">
-          <h2>Queue</h2>
-          <div class="panel-actions">
-            <span class="pill" id="queueCount">0 tracks</span>
-            <button class="btn ghost tiny" id="queueRefreshBtn" type="button">refresh</button>
-          </div>
-        </div>
-        <ol class="queue-list" id="queueList"></ol>
-      </section>
-
       <section class="panel prompt" data-stagger>
         <div class="panel-head">
-          <h2>New Prompt</h2>
+          <h2>Search</h2>
           <span class="pill subtle" id="requestState">idle</span>
         </div>
         <form id="promptForm" class="prompt-form">
-          <label class="field">
-            <span>Prompt</span>
-            <textarea id="promptInput" rows="3" placeholder="mellow tamil indie-romance, introspective, minimal percussion"></textarea>
-          </label>
-          <div class="field-row">
-            <label class="field">
-              <span>Seed</span>
-              <input id="seedInput" type="text" placeholder="artist or track" />
-            </label>
-            <label class="field">
-              <span>Mood</span>
-              <input id="moodInput" type="text" placeholder="calm" />
-            </label>
-          </div>
-          <div class="field-row">
-            <label class="field">
-              <span>Lang</span>
-              <input id="langInput" type="text" placeholder="ta" />
-            </label>
-            <label class="field">
-              <span>Avoid</span>
-              <input id="avoidInput" type="text" placeholder="remix, live" />
-            </label>
-          </div>
-          <div class="field-row">
-            <label class="field">
-              <span>Mix (explore/exploit)</span>
-              <input id="mixInput" type="text" placeholder="50/50" />
-            </label>
-            <label class="field">
-              <span>Vibe</span>
-              <select id="vibeInput">
-                <option value="normal" selected>normal</option>
-                <option value="strict">strict</option>
-                <option value="loose">loose</option>
-              </select>
-            </label>
-          </div>
-          <div class="field-row">
-            <label class="field small">
-              <span>Max tracks</span>
-              <input id="maxInput" type="number" min="1" max="50" placeholder="25" />
-            </label>
-            <label class="field small">
-              <span>TTL hours</span>
-              <input id="ttlInput" type="number" min="1" max="240" placeholder="72" />
-            </label>
+          <div class="prompt-body">
+            <div class="form-section">
+              <div class="section-title">Prompt</div>
+              <label class="field">
+                <span>Prompt</span>
+                <textarea id="promptInput" rows="2" placeholder="mellow tamil indie-romance, introspective, minimal percussion">mellow tamil indie-romance, introspective, minimal percussion</textarea>
+              </label>
+            </div>
+            <div class="form-divider"></div>
+            <div class="form-section">
+              <div class="section-title">Seed &amp; mood</div>
+              <div class="field-row">
+                <label class="field">
+                  <span>Seed</span>
+                  <input id="seedInput" type="text" placeholder="artist or track" />
+                </label>
+                <label class="field">
+                  <span>Mood</span>
+                  <input id="moodInput" type="text" placeholder="calm" />
+                </label>
+              </div>
+            </div>
+            <div class="form-divider"></div>
+            <div class="form-section">
+              <div class="section-title">Language &amp; filters</div>
+              <div class="field-row">
+                <label class="field">
+                  <span>Lang</span>
+                  <input id="langInput" type="text" placeholder="ta" />
+                </label>
+                <label class="field">
+                  <span>Avoid</span>
+                  <input id="avoidInput" type="text" placeholder="remix, live" />
+                </label>
+              </div>
+            </div>
+            <div class="form-divider"></div>
+            <div class="form-section">
+              <div class="section-title">Tuning</div>
+              <div class="field-row">
+                <label class="field">
+                  <span>Mix (explore/exploit)</span>
+                  <input id="mixInput" type="text" placeholder="50/50" />
+                </label>
+                <label class="field">
+                  <span>Vibe</span>
+                  <select id="vibeInput">
+                    <option value="normal" selected>normal</option>
+                    <option value="strict">strict</option>
+                    <option value="loose">loose</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="form-divider"></div>
+            <div class="form-section">
+              <div class="section-title">Limits</div>
+              <div class="field-row">
+                <label class="field small">
+                  <span>Max tracks</span>
+                  <input id="maxInput" type="number" min="1" max="3" placeholder="3" />
+                </label>
+                <label class="field small">
+                  <span>TTL hours</span>
+                  <input id="ttlInput" type="number" min="1" max="240" placeholder="72" />
+                </label>
+              </div>
+            </div>
           </div>
           <div class="actions">
-            <button class="btn primary" type="submit">play</button>
-            <button class="btn ghost" id="recurateBtn" type="button">re-curate</button>
-            <button class="btn ghost" id="clearBtn" type="button">clear</button>
+            <button class="btn primary" type="submit">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-play"></use></svg>
+              <span class="btn-label">search</span>
+            </button>
+            <button class="btn ghost" id="recurateBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+              <span class="btn-label">refresh</span>
+            </button>
+            <button class="btn ghost" id="clearBtn" type="button">
+              <svg class="btn-icon stroke" aria-hidden="true"><use href="#icon-clear"></use></svg>
+              <span class="btn-label">clear</span>
+            </button>
           </div>
         </form>
       </section>
 
-      <section class="panel seed" data-stagger>
-        <div class="panel-head">
-          <h2>Seed Details</h2>
-          <span class="pill subtle" id="seedStatus">none</span>
-        </div>
-        <div class="seed-info" id="seedInfo">No seed resolved yet.</div>
-        <div class="seed-next">
-          <div class="seed-label">Seed next (5-10)</div>
-          <ul id="seedNextList"></ul>
-        </div>
-      </section>
+      <div class="content-stack">
+        <section class="panel now" data-stagger>
+          <div class="panel-head">
+            <h1>Now Playing</h1>
+            <span class="pill" id="authPill">auth: off</span>
+          </div>
+          <div class="track">
+            <div class="track-art is-empty">
+              <img id="currentArt" alt="" />
+            </div>
+            <div class="track-info">
+              <div class="track-title" id="currentTitle">-</div>
+              <div class="track-artist" id="currentArtist">-</div>
+              <div class="track-meta" id="currentMeta">playlist idle</div>
+            </div>
+          </div>
+          <div class="progress" id="progressWrap">
+            <div class="progress-times">
+              <span id="progressElapsed">0:00</span>
+              <span id="progressDuration">0:00</span>
+            </div>
+            <input
+              id="progressInput"
+              class="progress-input"
+              type="range"
+              min="0"
+              max="0"
+              step="1"
+              value="0"
+              aria-label="Seek"
+            />
+            <div class="progress-hint">scroll to seek</div>
+          </div>
+          <div class="controls">
+            <button class="btn" id="prevBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-prev"></use></svg>
+            </button>
+            <button class="btn" id="pauseBtn" type="button">
+              <svg class="btn-icon icon-pause" aria-hidden="true"><use href="#icon-pause"></use></svg>
+              <svg class="btn-icon icon-play" aria-hidden="true"><use href="#icon-play"></use></svg>
+              <span class="btn-label"></span>
+            </button>
+            <button class="btn" id="nextBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-next"></use></svg>
+            </button>
+            <button class="btn" id="stopBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-stop"></use></svg>
+              <span class="btn-label"></span>
+            </button>
+            <button class="btn ghost" id="likeBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-like"></use></svg>
+              <span class="btn-label"></span>
+            </button>
+            <button class="btn ghost" id="dislikeBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-dislike"></use></svg>
+              <span class="btn-label"></span>
+            </button>
+            <button class="btn ghost" id="refreshBtn" type="button">
+              <svg class="btn-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+              <span class="btn-label">refresh</span>
+            </button>
+          </div>
+          <div class="learning" id="learningWrap">
+            <div class="learning-head">
+              <span class="learning-title">Learning</span>
+              <span class="learning-status" id="learningStatus">unsaved</span>
+            </div>
+            <div class="learning-row">
+              <label class="field small">
+                <span>Fit</span>
+                <div class="learning-score">
+                  <input
+                    id="learnScore"
+                    class="learning-range"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value="50"
+                  />
+                  <span class="learning-value" id="learnScoreValue">50%</span>
+                </div>
+              </label>
+              <label class="field small">
+                <span>Energy</span>
+                <select id="learnEnergy">
+                  <option value="">auto</option>
+                  <option value="low">low</option>
+                  <option value="med">med</option>
+                  <option value="high">high</option>
+                </select>
+              </label>
+              <label class="field small">
+                <span>Tempo</span>
+                <select id="learnTempo">
+                  <option value="">auto</option>
+                  <option value="slow">slow</option>
+                  <option value="medium">medium</option>
+                  <option value="fast">fast</option>
+                </select>
+              </label>
+              <button class="btn ghost tiny" id="learnSaveBtn" type="button">save</button>
+            </div>
+          </div>
+          <div class="prompt-line" id="promptLine">Prompt: -</div>
+        </section>
+
+        <section class="panel queue" data-stagger>
+          <div class="panel-head">
+            <h2>Queue</h2>
+            <div class="panel-actions">
+              <span class="pill" id="queueCount">0 tracks</span>
+              <button class="btn ghost tiny" id="queueRefreshBtn" type="button">
+                <svg class="btn-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>
+                <span class="btn-label">refresh</span>
+              </button>
+            </div>
+          </div>
+          <ol class="queue-list" id="queueList"></ol>
+        </section>
+      </div>
 
       <section class="panel debug" data-stagger>
         <div class="panel-head">
@@ -150,6 +262,36 @@
       <span>ytplay web - served by the daemon</span>
       <span id="lastUpdated">last updated: -</span>
     </footer>
+
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-prev" viewBox="0 0 24 24">
+        <path d="M6 5h2v14H6zM20 5l-10 7 10 7V5z"></path>
+      </symbol>
+      <symbol id="icon-next" viewBox="0 0 24 24">
+        <path d="M16 5h2v14h-2zM4 5l10 7-10 7V5z"></path>
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <path d="M6 4l12 8-12 8V4z"></path>
+      </symbol>
+      <symbol id="icon-pause" viewBox="0 0 24 24">
+        <path d="M6 5h4v14H6zM14 5h4v14h-4z"></path>
+      </symbol>
+      <symbol id="icon-stop" viewBox="0 0 24 24">
+        <path d="M6 6h12v12H6z"></path>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 12.65-5.65z"></path>
+      </symbol>
+      <symbol id="icon-like" viewBox="0 0 24 24">
+        <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73V10z"></path>
+      </symbol>
+      <symbol id="icon-dislike" viewBox="0 0 24 24">
+        <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22L1.14 11.27c-.09.23-.14.47-.14.73V14c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"></path>
+      </symbol>
+      <symbol id="icon-clear" viewBox="0 0 24 24">
+        <path d="M6 6l12 12M18 6L6 18"></path>
+      </symbol>
+    </svg>
 
     <script src="app.js"></script>
   </body>

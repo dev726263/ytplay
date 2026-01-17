@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import os, json, time, sqlite3, subprocess, threading, shutil, mimetypes, logging, re
+import os, sys, json, time, sqlite3, subprocess, threading, shutil, mimetypes, logging, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 from openai import OpenAI
 from ytmusicapi import YTMusic
@@ -31,14 +31,37 @@ def load_env_file(path: str):
             # don't override already-set env vars
             os.environ.setdefault(k, v)
 
+def load_env_file_override(path: str):
+    """Reload env file and override keys for restart."""
+    if not path:
+        return
+    path = expanduser(path)
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            os.environ[k] = v
+
 # Load env from ~/.ytplay/.env by default
 DEFAULT_ENV = expanduser("~/.ytplay/.env")
 load_env_file(os.getenv("YTP_ENV_FILE", DEFAULT_ENV))
+
+def env_file_path() -> str:
+    return expanduser(os.getenv("YTP_ENV_FILE", DEFAULT_ENV))
 
 PORT = int(os.getenv("YTP_PORT", "17845"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 MAX_TRACKS_DEFAULT = int(os.getenv("YTP_MAX_TRACKS", "25"))
 CACHE_TTL_HOURS = int(os.getenv("YTP_CACHE_TTL_HOURS", "72"))
+QUEUE_MAX = int(os.getenv("YTP_QUEUE_MAX", "3"))
+QUEUE_MAX = max(1, min(10, QUEUE_MAX))
+MAX_TRACKS_DEFAULT = min(MAX_TRACKS_DEFAULT, QUEUE_MAX)
 SEED_NEXT_MAX = int(os.getenv("YTP_SEED_NEXT_MAX", "10"))
 SEED_NEXT_MAX = max(5, min(10, SEED_NEXT_MAX))
 PREFETCH_EXTRA = int(os.getenv("YTP_PREFETCH_EXTRA", "5"))
@@ -47,6 +70,10 @@ PREFETCH_WORKERS = int(os.getenv("YTP_PREFETCH_WORKERS", "4"))
 PREFETCH_WORKERS = max(1, min(8, PREFETCH_WORKERS))
 RECENT_HISTORY_LIMIT = int(os.getenv("YTP_RECENT_HISTORY_LIMIT", "50"))
 RECENT_HISTORY_LIMIT = max(0, min(200, RECENT_HISTORY_LIMIT))
+NO_REPEAT_HOURS = float(os.getenv("YTP_NO_REPEAT_HOURS", "3"))
+NO_REPEAT_HOURS = max(0.0, min(168.0, NO_REPEAT_HOURS))
+LEARN_MIN_SCORE = 0.6
+LEARN_SKIP_THRESHOLD = 0.35
 MIX_DEFAULT = os.getenv("YTP_MIX_DEFAULT", "50/50")
 VIBE_DEFAULT = os.getenv("YTP_VIBE_DEFAULT", "normal")
 VIBE_LLM_ENABLED = os.getenv("YTP_VIBE_LLM", "0") == "1"
@@ -58,6 +85,81 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("ytplayd")
+
+PROGRESS_PREFIXES = (
+    "openai:",
+    "seed:",
+    "ytmusic:",
+    "vibe:",
+    "pick:",
+    "stream:",
+    "queue:",
+    "play:",
+)
+PROGRESS_MAX = 60
+progress_lock = threading.Lock()
+progress_log: List[Dict[str, Any]] = []
+progress_seq = 0
+
+def push_progress(msg: str):
+    global progress_log, progress_seq
+    if not msg:
+        return
+    with progress_lock:
+        progress_seq += 1
+        progress_log.append({"id": progress_seq, "msg": msg, "ts": int(time.time())})
+        if len(progress_log) > PROGRESS_MAX:
+            progress_log = progress_log[-PROGRESS_MAX:]
+
+class ProgressHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return
+        if any(msg.startswith(prefix) for prefix in PROGRESS_PREFIXES):
+            push_progress(msg)
+
+logger.addHandler(ProgressHandler())
+
+def read_env_file() -> Dict[str, Any]:
+    path = env_file_path()
+    if not os.path.exists(path):
+        return {"path": path, "content": "", "exists": False}
+    with open(path, "r", encoding="utf-8") as f:
+        return {"path": path, "content": f.read(), "exists": True}
+
+def write_env_file(content: str) -> str:
+    path = env_file_path()
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+def schedule_restart():
+    def _restart():
+        time.sleep(0.6)
+        try:
+            load_env_file_override(env_file_path())
+        except Exception:
+            pass
+        try:
+            if httpd:
+                httpd.shutdown()
+                httpd.server_close()
+        except Exception:
+            pass
+        try:
+            if mpv and mpv.proc:
+                mpv.proc.terminate()
+                mpv.proc.wait(timeout=2)
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+    threading.Thread(target=_restart, daemon=True).start()
 
 STATE_DIR = expanduser(os.getenv("YTP_STATE_DIR", "~/.ytplay"))
 CACHE_DB = os.path.join(STATE_DIR, "cache.sqlite3")
@@ -153,6 +255,17 @@ def db() -> sqlite3.Connection:
           played_at INTEGER NOT NULL
         );
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS learning (
+          videoId TEXT PRIMARY KEY,
+          title TEXT,
+          artist TEXT,
+          score REAL,
+          energy TEXT,
+          tempo TEXT,
+          updated_at INTEGER NOT NULL
+        );
+    """)
     con.commit()
     return con
 
@@ -216,6 +329,96 @@ def get_recent_history_since(con: sqlite3.Connection, since_ts: int) -> List[str
         (since_ts,)
     ).fetchall()
     return [str(r[0]) for r in rows if r and r[0]]
+
+def normalize_energy(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    raw = value.strip().lower()
+    if raw in ("low", "med", "high"):
+        return raw
+    if raw == "medium":
+        return "med"
+    return None
+
+def normalize_tempo(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    raw = value.strip().lower()
+    if raw in ("slow", "medium", "fast"):
+        return raw
+    if raw == "med":
+        return "medium"
+    return None
+
+def parse_learning_score(raw: Optional[str]) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if score > 1.0:
+        score = score / 100.0
+    return max(0.0, min(1.0, score))
+
+def save_learning(video_id: str, title: str, artist: str, score: Optional[float],
+                  energy: Optional[str], tempo: Optional[str]):
+    con = db()
+    now = int(time.time())
+    con.execute(
+        "INSERT OR REPLACE INTO learning(videoId, title, artist, score, energy, tempo, updated_at) "
+        "VALUES(?,?,?,?,?,?,?);",
+        (video_id, title, artist, score, energy, tempo, now)
+    )
+    con.commit()
+    con.close()
+
+def get_learning(con: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    rows = con.execute("SELECT videoId, score, energy, tempo FROM learning;").fetchall()
+    for vid, score, energy, tempo in rows:
+        if not vid:
+            continue
+        out[str(vid)] = {
+            "score": float(score) if score is not None else None,
+            "energy": energy,
+            "tempo": tempo,
+        }
+    return out
+
+def get_learning_profile(con: sqlite3.Connection, min_score: float = 0.6, limit: int = 25) -> Dict[str, Any]:
+    rows = con.execute(
+        "SELECT energy, tempo FROM learning WHERE score >= ? ORDER BY updated_at DESC LIMIT ?;",
+        (min_score, limit)
+    ).fetchall()
+    energy_counts: Dict[str, int] = {}
+    tempo_counts: Dict[str, int] = {}
+    for energy, tempo in rows:
+        if energy:
+            energy_counts[energy] = energy_counts.get(energy, 0) + 1
+        if tempo:
+            tempo_counts[tempo] = tempo_counts.get(tempo, 0) + 1
+    profile: Dict[str, Any] = {}
+    if energy_counts:
+        profile["energy"] = max(energy_counts, key=energy_counts.get)
+    if tempo_counts:
+        profile["tempo"] = max(tempo_counts, key=tempo_counts.get)
+    return profile
+
+def get_learning_for_track(con: sqlite3.Connection, video_id: str) -> Optional[Dict[str, Any]]:
+    row = con.execute(
+        "SELECT score, energy, tempo, updated_at FROM learning WHERE videoId=?;",
+        (video_id,)
+    ).fetchone()
+    if not row:
+        return None
+    score, energy, tempo, updated_at = row
+    return {
+        "score": float(score) if score is not None else None,
+        "energy": energy,
+        "tempo": tempo,
+        "updated_at": int(updated_at) if updated_at is not None else None,
+    }
 
 def cache_get(con: sqlite3.Connection, key: str, ttl_hours: int) -> Optional[Dict[str, Any]]:
     row = con.execute(
@@ -471,6 +674,7 @@ def build_vibe_profile(
     extras: Dict[str, Any],
     liked_tracks: List[Dict[str, str]],
     avoid_terms: List[str],
+    learning_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     prompt_text = prompt or ""
     seed_text = ""
@@ -494,6 +698,11 @@ def build_vibe_profile(
     tempo = infer_tempo(mood_merged)
     if not tempo and energy:
         tempo = "slow" if energy == "low" else "fast" if energy == "high" else "medium"
+    if learning_profile:
+        if not energy and learning_profile.get("energy"):
+            energy = learning_profile.get("energy")
+        if not tempo and learning_profile.get("tempo"):
+            tempo = learning_profile.get("tempo")
 
     instrumentation = set(infer_instrumentation(merged))
 
@@ -616,6 +825,12 @@ def vibe_score_llm(track: Dict[str, str], profile: Dict[str, Any]) -> Optional[f
     if not VIBE_LLM_ENABLED:
         return None
     client = openai_client()
+    logger.info(
+        "openai: request vibe_score model=%s title=%s artist=%s",
+        VIBE_LLM_MODEL,
+        track.get("title"),
+        track.get("artist"),
+    )
     logger.info("openai: vibe score '%s' - '%s'", track.get("title"), track.get("artist"))
     started = time.time()
     system = (
@@ -694,14 +909,20 @@ def build_bucket_order(total: int, explore_ratio: float) -> List[str]:
             exploit_count += 1
     return order
 
-def preference_score(track: Dict[str, str], votes: Dict[str, int], liked_artists: set) -> float:
+def preference_score(track: Dict[str, str], votes: Dict[str, int], liked_artists: set,
+                     learning: Dict[str, Dict[str, Any]]) -> float:
     vid = track.get("videoId")
+    score = 0.0
     if vid and votes.get(vid, 0) > 0:
-        return 1.0
+        score = 1.0
     artist = (track.get("artist") or "").lower()
     if artist and artist in liked_artists:
-        return 0.6
-    return 0.0
+        score = max(score, 0.6)
+    if vid and vid in learning:
+        learned_score = learning[vid].get("score")
+        if learned_score is not None:
+            score = max(score, float(learned_score))
+    return score
 
 def artist_count(window: List[str], artist: str) -> int:
     return sum(1 for a in window if a == artist)
@@ -794,17 +1015,37 @@ def response_text(resp: Any) -> str:
     text = get_attr(resp, "output_text", "")
     if text:
         return text
+    output_json = get_attr(resp, "output_json")
+    if output_json:
+        try:
+            return json.dumps(output_json)
+        except TypeError:
+            return str(output_json)
     output = get_attr(resp, "output")
     if output:
         for item in output:
             item_type = get_attr(item, "type")
-            if item_type and item_type != "message":
+            if item_type and item_type not in ("message", "output_json"):
                 continue
+            if item_type == "output_json":
+                payload = get_attr(item, "json")
+                if payload is not None:
+                    try:
+                        return json.dumps(payload)
+                    except TypeError:
+                        return str(payload)
             content = get_attr(item, "content")
             if not content:
                 continue
             for c in content:
                 c_type = get_attr(c, "type")
+                if c_type == "output_json":
+                    payload = get_attr(c, "json")
+                    if payload is not None:
+                        try:
+                            return json.dumps(payload)
+                        except TypeError:
+                            return str(payload)
                 if c_type and c_type not in ("output_text", "text"):
                     continue
                 t = get_attr(c, "text")
@@ -842,7 +1083,7 @@ def parse_curation_response(text: str, max_queries: int) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("LLM response JSON was not an object.")
 
-    search_queries = payload.get("search_queries") or []
+    search_queries = payload.get("queries") or []
     if isinstance(search_queries, str):
         search_queries = [search_queries]
     elif not isinstance(search_queries, list):
@@ -947,6 +1188,15 @@ def llm_curate(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
         "additionalProperties": False,
     }
 
+    logger.info(
+        "openai: request model=%s prompt_len=%d seed=%s mood=%s lang=%s max_queries=%d",
+        MODEL,
+        len(prompt or ""),
+        seed,
+        mood,
+        lang,
+        max_queries,
+    )
     response_kwargs = {
         "model": MODEL,
         "input": [
@@ -998,13 +1248,21 @@ def pick_tracks(
     queries: List[str],
     max_tracks: int,
     extras: Dict[str, Any],
-    debug_meta: Optional[Dict[str, Any]] = None
+    debug_meta: Optional[Dict[str, Any]] = None,
+    include_seed: bool = True
 ) -> tuple[List[Dict[str, str]], Optional[Dict[str, str]], List[Dict[str, str]]]:
     con = db()
     votes = get_votes(con)
     liked_tracks = get_recent_likes(con, 20)
     liked_artists = {t.get("artist", "").lower() for t in liked_tracks if t.get("artist")}
-    recent_24h = set(get_recent_history_since(con, int(time.time()) - 86400))
+    learning = get_learning(con)
+    learning_profile = get_learning_profile(con, LEARN_MIN_SCORE, 25)
+    no_repeat_seconds = int(NO_REPEAT_HOURS * 3600)
+    recent_window: Set[str] = set()
+    if no_repeat_seconds > 0:
+        recent_window = set(get_recent_history_since(con, int(time.time()) - no_repeat_seconds))
+    if session_seen_ids:
+        recent_window |= set(session_seen_ids)
     allow_repeat_flag = allow_repeat(prompt)
 
     seed = extras.get("seed")
@@ -1022,25 +1280,28 @@ def pick_tracks(
         "vibe_threshold": vibe_threshold,
         "mix_ratio": mix_ratio,
         "query_count": len(queries),
+        "repeat_hours": NO_REPEAT_HOURS,
         "queries": queries,
         "results_total": 0,
         "candidates_total": 0,
         "selected_total": 0,
-        "seed_included": bool(seed_info),
+        "seed_included": bool(seed_info) and include_seed,
+        "seed_used": bool(seed_info),
         "seed_next_count": 0,
         "skips": {
             "no_track": 0,
             "duplicate": 0,
             "disliked": 0,
-            "repeat_24h": 0,
+            "repeat_window": 0,
             "vibe": 0,
+            "learn_low": 0,
         },
         "query_stats": [],
     }
     if debug_meta:
         debug.update(debug_meta)
 
-    profile = build_vibe_profile(prompt, seed_info, extras, liked_tracks, avoid_terms)
+    profile = build_vibe_profile(prompt, seed_info, extras, liked_tracks, avoid_terms, learning_profile)
     logger.info(
         "vibe: mode=%s threshold=%.2f energy=%s tempo=%s langs=%s tags=%s",
         vibe_mode,
@@ -1083,9 +1344,13 @@ def pick_tracks(
             if votes.get(vid, 0) < 0:
                 debug["skips"]["disliked"] += 1
                 continue
-            if (vid in recent_24h) and not allow_repeat_flag:
-                debug["skips"]["repeat_24h"] += 1
-                logger.debug("skip 24h repeat %s", vid)
+            if (vid in recent_window) and not allow_repeat_flag:
+                debug["skips"]["repeat_window"] += 1
+                logger.debug("skip recent repeat %s", vid)
+                continue
+            learned = learning.get(vid)
+            if learned and learned.get("score") is not None and learned["score"] < LEARN_SKIP_THRESHOLD:
+                debug["skips"]["learn_low"] += 1
                 continue
 
             base_score = vibe_score(track, profile, vibe_mode, vibe_threshold)
@@ -1098,7 +1363,7 @@ def pick_tracks(
                 debug["skips"]["vibe"] += 1
                 continue
 
-            pref = preference_score(track, votes, liked_artists)
+            pref = preference_score(track, votes, liked_artists, learning)
             candidates.append({"track": track, "vibe": base_score, "pref": pref})
             seen.add(vid)
             query_stat["candidates"] += 1
@@ -1119,7 +1384,7 @@ def pick_tracks(
     selected: List[Dict[str, str]] = []
     artist_window: List[str] = []
     used_ids = set()
-    if seed_info:
+    if seed_info and include_seed:
         selected.append(seed_info)
         used_ids.add(seed_info.get("videoId"))
         artist = (seed_info.get("artist") or "").lower()
@@ -1165,7 +1430,7 @@ def pick_tracks(
                 artist_window.pop(0)
 
     seed_next: List[Dict[str, str]] = []
-    if seed_info:
+    if seed_info and include_seed:
         seed_next = selected[1:1 + SEED_NEXT_MAX]
         logger.info("seed: next curated %d tracks", len(seed_next))
 
@@ -1178,10 +1443,11 @@ def pick_tracks(
     logger.info(
         "pick: selected=%d exploit=%d explore=%d",
         len(selected),
-        len([t for t in selected if preference_score(t, votes, liked_artists) > 0]),
-        len([t for t in selected if preference_score(t, votes, liked_artists) == 0]),
+        len([t for t in selected if preference_score(t, votes, liked_artists, learning) > 0]),
+        len([t for t in selected if preference_score(t, votes, liked_artists, learning) == 0]),
     )
 
+    con.close()
     return selected[:max_tracks], seed_info, seed_next
 
 def resolve_stream_url(videoId: str) -> Optional[str]:
@@ -1326,15 +1592,36 @@ class MPVController:
         with self.lock:
             self._ipc({"command": ["playlist-next", "force"]})
 
+    def prev(self):
+        with self.lock:
+            self._ipc({"command": ["playlist-prev", "force"]})
+
     def play_index(self, index: int):
         with self.lock:
             self._ipc({"command": ["playlist-play-index", index]})
+
+    def append(self, url: str):
+        with self.lock:
+            self._ipc({"command": ["loadfile", url, "append-play"]})
+
+    def seek(self, seconds: float, mode: str = "absolute"):
+        with self.lock:
+            self._ipc({"command": ["seek", seconds, mode]})
+
+    def seek_relative(self, delta: float):
+        with self.lock:
+            self._ipc({"command": ["seek", delta, "relative"]})
+
+    def remove_index(self, index: int):
+        with self.lock:
+            self._ipc({"command": ["playlist-remove", index]})
 
     def stop(self):
         with self.lock:
             self._ipc({"command": ["stop"]})
 
 mpv = MPVController()
+httpd: Optional[HTTPServer] = None
 yt, yt_auth_path = load_ytmusic()
 
 last_prompt: Optional[str] = None
@@ -1344,6 +1631,21 @@ last_seed: Optional[Dict[str, str]] = None
 last_seed_next: List[Dict[str, str]] = []
 last_played_at: Optional[int] = None
 last_debug: Dict[str, Any] = {}
+last_pos: Optional[int] = None
+last_action: Optional[str] = None
+last_action_track: Optional[str] = None
+last_played_track_id: Optional[str] = None
+recent_avoid_terms: List[str] = []
+queue_fill_lock = threading.Lock()
+queue_fill_inflight = False
+queue_fill_token = 0
+session_seen_ids: Set[str] = set()
+
+def reset_queue_fill():
+    global queue_fill_inflight, queue_fill_token
+    with queue_fill_lock:
+        queue_fill_token += 1
+        queue_fill_inflight = False
 
 def maybe_reload_ytmusic():
     global yt, yt_auth_path
@@ -1352,12 +1654,205 @@ def maybe_reload_ytmusic():
         yt = YTMusic(auth_path) if auth_path else YTMusic()
         yt_auth_path = auth_path
 
+def track_seed_text(track: Optional[Dict[str, str]]) -> str:
+    if not track:
+        return ""
+    title = (track.get("title") or "").strip()
+    artist = (track.get("artist") or "").strip()
+    return " ".join([p for p in (title, artist) if p])
+
+def current_queue_track(pos: Optional[int] = None) -> Optional[Dict[str, str]]:
+    if pos is None:
+        pos = mpv.get_property("playlist-pos")
+    if isinstance(pos, int) and 0 <= pos < len(last_queue):
+        return last_queue[pos]
+    return None
+
+def record_history(track: Dict[str, str]):
+    con = db()
+    now = int(time.time())
+    con.execute(
+        "INSERT INTO history(videoId, title, artist, played_at) VALUES(?,?,?,?);",
+        (track.get("videoId"), track.get("title"), track.get("artist"), now)
+    )
+    con.commit()
+    con.close()
+    register_session_track(track)
+
+def register_session_track(track: Optional[Dict[str, str]]):
+    if not track:
+        return
+    vid = track.get("videoId")
+    if vid:
+        session_seen_ids.add(vid)
+
+def register_avoid_term(term: str):
+    cleaned = term.strip()
+    if not cleaned:
+        return
+    if cleaned in recent_avoid_terms:
+        recent_avoid_terms.remove(cleaned)
+    recent_avoid_terms.insert(0, cleaned)
+    if len(recent_avoid_terms) > 6:
+        recent_avoid_terms.pop()
+
+def mark_action(action: str, track: Optional[Dict[str, str]]):
+    global last_action, last_action_track
+    if action in ("skip", "dislike") and track:
+        register_avoid_term(track_seed_text(track))
+    if action in ("like", "dislike") and track:
+        last_action = action
+        last_action_track = track.get("videoId")
+        return
+    last_action = None
+    last_action_track = None
+
+def build_seed_extras(seed_track: Dict[str, str], action: str) -> Dict[str, Any]:
+    base = last_extras or {}
+    seed_text = track_seed_text(seed_track)
+    avoid = list(base.get("avoid") or [])
+    if action in ("skip", "dislike") and seed_text:
+        avoid.append(seed_text)
+    if recent_avoid_terms:
+        avoid.extend(recent_avoid_terms)
+    return {
+        "lang": base.get("lang"),
+        "mood": base.get("mood"),
+        "seed": seed_text or None,
+        "mix": base.get("mix"),
+        "vibe": base.get("vibe"),
+        "max_tracks": 1,
+        "ttl_hours": base.get("ttl_hours", CACHE_TTL_HOURS),
+        "avoid": avoid,
+    }
+
+def curate_next_track(seed_track: Dict[str, str], action: str) -> Optional[Dict[str, Any]]:
+    if not last_prompt:
+        return None
+    maybe_reload_ytmusic()
+    extras = build_seed_extras(seed_track, action)
+    curated = llm_curate(last_prompt, extras)
+    queries = curated.get("search_queries") or []
+    avoid_terms = curated.get("avoid_terms") or []
+    if not queries:
+        fallback = fallback_queries(last_prompt, extras, int(extras.get("max_queries", 10)))
+        if fallback:
+            logger.warning("queue: empty queries, using fallback (%d)", len(fallback))
+            queries = fallback
+    extras = {**extras, "avoid_terms": avoid_terms}
+    debug_meta = {
+        "curation_source": curated.get("source") if isinstance(curated, dict) else None,
+        "curation_error": curated.get("error") if isinstance(curated, dict) else None,
+    }
+    tracks, seed_info, _ = pick_tracks(
+        yt,
+        last_prompt,
+        queries,
+        max_tracks=1,
+        extras=extras,
+        debug_meta=debug_meta,
+        include_seed=False,
+    )
+    if not tracks:
+        return None
+    resolved_urls, resolved_count = resolve_urls_parallel(tracks, 1, PREFETCH_WORKERS)
+    track = tracks[0]
+    source = "openai" if isinstance(curated, dict) and curated.get("source") == "llm" else "fallback"
+    track["curation"] = source
+    url = resolved_urls[0] if resolved_urls else None
+    if not url:
+        url = watch_url(track["videoId"])
+        logger.warning("queue: no stream URL resolved; falling back to watch URL")
+    return {"track": track, "url": url, "source": source, "seed": seed_info, "action": action}
+
+def fill_queue_worker(pos: Optional[int], token: int):
+    global queue_fill_inflight, last_queue, queue_fill_token
+    try:
+        while True:
+            with queue_fill_lock:
+                if token != queue_fill_token:
+                    return
+                if not last_queue or not last_prompt:
+                    return
+                if pos is None:
+                    pos = mpv.get_property("playlist-pos")
+                if not isinstance(pos, int):
+                    return
+                if len(last_queue) >= QUEUE_MAX:
+                    return
+                seed_track = current_queue_track(pos)
+                action = "listen"
+                if seed_track and last_action_track and seed_track.get("videoId") == last_action_track:
+                    action = last_action or "listen"
+                prompt_guard = last_prompt
+            if not seed_track:
+                return
+            result = curate_next_track(seed_track, action)
+            if not result:
+                return
+            with queue_fill_lock:
+                if token != queue_fill_token:
+                    return
+                if not last_queue or last_prompt != prompt_guard or len(last_queue) >= QUEUE_MAX:
+                    return
+                vid = result["track"].get("videoId")
+                if vid and any(t.get("videoId") == vid for t in last_queue):
+                    logger.info("queue: duplicate candidate %s; skipping", vid)
+                    return
+                mpv.append(result["url"])
+                last_queue.append(result["track"])
+                register_session_track(result["track"])
+                if isinstance(last_debug, dict):
+                    last_debug["auto_queue"] = {
+                        "seed": track_seed_text(seed_track),
+                        "action": action,
+                        "source": result.get("source"),
+                        "queue_len": len(last_queue),
+                    }
+    finally:
+        with queue_fill_lock:
+            if token == queue_fill_token:
+                queue_fill_inflight = False
+
+def ensure_queue_filled(pos: Optional[int] = None) -> Optional[int]:
+    global last_pos, last_queue, queue_fill_inflight, queue_fill_token
+    if not last_queue or not last_prompt:
+        return pos
+    token = None
+    with queue_fill_lock:
+        if pos is None:
+            pos = mpv.get_property("playlist-pos")
+        if not isinstance(pos, int):
+            return pos
+        if last_pos is None:
+            last_pos = pos
+        elif pos < last_pos:
+            last_pos = pos
+        if pos > last_pos and pos > 0:
+            for _ in range(pos):
+                mpv.remove_index(0)
+            del last_queue[:pos]
+            pos = mpv.get_property("playlist-pos")
+            if not isinstance(pos, int):
+                pos = 0
+            last_pos = pos
+        needs_fill = len(last_queue) < QUEUE_MAX
+        should_fill = needs_fill and not queue_fill_inflight
+        if should_fill:
+            queue_fill_inflight = True
+            queue_fill_token += 1
+            token = queue_fill_token
+    if should_fill and token is not None:
+        threading.Thread(target=fill_queue_worker, args=(pos, token), daemon=True).start()
+    return pos
+
 def handle_play(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
     maybe_reload_ytmusic()
     con = db()
     ttl_hours = int(extras.get("ttl_hours", CACHE_TTL_HOURS))
     requested_max = int(extras.get("max_tracks", MAX_TRACKS_DEFAULT))
-    target_max = requested_max + PREFETCH_EXTRA
+    requested_max = min(requested_max, QUEUE_MAX)
+    target_max = min(requested_max + PREFETCH_EXTRA, QUEUE_MAX)
     extras = {**extras, "prefetch_extra": PREFETCH_EXTRA}
     logger.info("play: start prompt_len=%d requested=%d prefetch=%d", len(prompt), requested_max, PREFETCH_EXTRA)
     logger.info("play: mix=%s vibe=%s", extras.get("mix"), extras.get("vibe"))
@@ -1382,6 +1877,7 @@ def handle_play(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
         if fallback:
             logger.warning("play: empty queries, using fallback (%d)", len(fallback))
             queries = fallback
+    curation_source = "openai" if isinstance(curated, dict) and curated.get("source") == "llm" else "fallback"
 
     extras = {**extras, "avoid_terms": avoid_terms}
     debug_meta = {
@@ -1410,6 +1906,8 @@ def handle_play(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
             if url:
                 urls.append(url)
                 playable.append(track)
+    for track in playable:
+        track["curation"] = curation_source
     if isinstance(last_debug, dict):
         last_debug["stream_total"] = len(tracks_for_play)
         last_debug["stream_resolved"] = resolved_count
@@ -1417,22 +1915,23 @@ def handle_play(prompt: str, extras: Dict[str, Any]) -> Dict[str, Any]:
     mpv.load_and_play(urls)
     logger.info("play: loaded %d tracks", len(playable))
 
-    now = int(time.time())
-    for t in playable:
-        con.execute(
-            "INSERT INTO history(videoId, title, artist, played_at) VALUES(?,?,?,?);",
-            (t["videoId"], t.get("title"), t.get("artist"), now)
-        )
-    con.commit()
-
-    global last_prompt, last_extras, last_queue, last_seed, last_seed_next, last_played_at
+    global last_prompt, last_extras, last_queue, last_seed, last_seed_next, last_played_at, last_pos, last_played_track_id, recent_avoid_terms, queue_fill_inflight, queue_fill_token
     last_prompt = prompt
     last_extras = extras
     last_queue = playable
+    for track in playable:
+        register_session_track(track)
     last_seed = seed_info
     last_seed_next = seed_next
-    last_played_at = now
+    last_played_at = int(time.time())
+    last_pos = 0
+    last_played_track_id = None
+    recent_avoid_terms = []
+    with queue_fill_lock:
+        queue_fill_token += 1
+        queue_fill_inflight = False
 
+    con.close()
     return {
         "ok": True,
         "count": len(playable),
@@ -1450,14 +1949,33 @@ def vote(videoId: str, title: str, artist: str, v: int) -> Dict[str, Any]:
         (videoId, title, artist, int(v), int(time.time()))
     )
     con.commit()
+    con.close()
     return {"ok": True}
 
 def state_snapshot() -> Dict[str, Any]:
-    paused = mpv.get_property("pause")
     pos = mpv.get_property("playlist-pos")
+    pos = ensure_queue_filled(pos)
+    paused = mpv.get_property("pause")
+    position = mpv.get_property("time-pos")
+    duration = mpv.get_property("duration")
     current = None
     if isinstance(pos, int) and 0 <= pos < len(last_queue):
         current = last_queue[pos]
+    global last_played_track_id, last_played_at, last_pos, last_action, last_action_track
+    if isinstance(pos, int):
+        last_pos = pos
+    if current and current.get("videoId") != last_played_track_id:
+        record_history(current)
+        last_played_track_id = current.get("videoId")
+        last_played_at = int(time.time())
+        if last_action_track == current.get("videoId"):
+            last_action = None
+            last_action_track = None
+    learning = None
+    if current and current.get("videoId"):
+        con = db()
+        learning = get_learning_for_track(con, current.get("videoId"))
+        con.close()
     auth_path = find_auth_path()
     return {
         "ok": True,
@@ -1467,12 +1985,21 @@ def state_snapshot() -> Dict[str, Any]:
         "current_index": pos,
         "current": current,
         "paused": paused,
+        "position": position,
+        "duration": duration,
+        "learning": learning,
         "seed": last_seed,
         "seed_next": last_seed_next,
         "last_played_at": last_played_at,
         "debug": last_debug,
         "auth": bool(auth_path),
     }
+
+def progress_snapshot(limit: int = 8) -> Dict[str, Any]:
+    with progress_lock:
+        lines = list(progress_log)[-limit:]
+        latest_id = progress_seq
+    return {"ok": True, "lines": lines, "latest_id": latest_id}
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj: Dict[str, Any]):
@@ -1485,6 +2012,18 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("client disconnected while sending json response")
+
+    def _read_json(self) -> Optional[Dict[str, Any]]:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0:
+            return None
+        raw = self.rfile.read(length)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return None
 
     def _redirect(self, location: str):
         try:
@@ -1528,6 +2067,12 @@ class Handler(BaseHTTPRequestHandler):
             if p.path == "/state":
                 return self._json(200, state_snapshot())
 
+            if p.path == "/progress":
+                return self._json(200, progress_snapshot())
+
+            if p.path == "/env":
+                return self._json(200, {"ok": True, **read_env_file()})
+
             if p.path == "/play":
                 prompt = (qs.get("q") or [""])[0].strip()
                 if not prompt:
@@ -1549,8 +2094,37 @@ class Handler(BaseHTTPRequestHandler):
                 mpv.pause_toggle()
                 return self._json(200, {"ok": True})
 
+            if p.path == "/prev":
+                mark_action("prev", current_queue_track())
+                mpv.prev()
+                reset_queue_fill()
+                ensure_queue_filled()
+                return self._json(200, {"ok": True})
+
             if p.path == "/next":
+                mark_action("skip", current_queue_track())
                 mpv.next()
+                reset_queue_fill()
+                ensure_queue_filled()
+                return self._json(200, {"ok": True})
+
+            if p.path == "/seek":
+                pos_raw = (qs.get("pos") or [None])[0]
+                delta_raw = (qs.get("delta") or [None])[0]
+                if pos_raw is None and delta_raw is None:
+                    return self._json(400, {"ok": False, "error": "need pos or delta"})
+                if pos_raw is not None:
+                    try:
+                        pos = float(pos_raw)
+                    except ValueError:
+                        return self._json(400, {"ok": False, "error": "invalid pos"})
+                    mpv.seek(pos, "absolute")
+                    return self._json(200, {"ok": True})
+                try:
+                    delta = float(delta_raw)
+                except ValueError:
+                    return self._json(400, {"ok": False, "error": "invalid delta"})
+                mpv.seek_relative(delta)
                 return self._json(200, {"ok": True})
 
             if p.path == "/play_index":
@@ -1561,11 +2135,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": "invalid index"})
                 if idx < 0 or idx >= len(last_queue):
                     return self._json(400, {"ok": False, "error": "index out of range"})
+                mark_action("skip", current_queue_track())
                 mpv.play_index(idx)
+                reset_queue_fill()
+                ensure_queue_filled()
                 return self._json(200, {"ok": True})
 
             if p.path == "/stop":
                 mpv.stop()
+                return self._json(200, {"ok": True})
+
+            if p.path == "/learn":
+                vid = (qs.get("id") or [""])[0].strip()
+                title = (qs.get("title") or [""])[0]
+                artist = (qs.get("artist") or [""])[0]
+                score = parse_learning_score((qs.get("score") or [None])[0])
+                energy = normalize_energy((qs.get("energy") or [""])[0])
+                tempo = normalize_tempo((qs.get("tempo") or [""])[0])
+                if not vid:
+                    return self._json(400, {"ok": False, "error": "need id"})
+                if score is None and not energy and not tempo:
+                    return self._json(400, {"ok": False, "error": "need score, energy, or tempo"})
+                save_learning(vid, title, artist, score, energy, tempo)
                 return self._json(200, {"ok": True})
 
             if p.path == "/vote":
@@ -1575,6 +2166,8 @@ class Handler(BaseHTTPRequestHandler):
                 artist = (qs.get("artist") or [""])[0]
                 if not vid or v not in (-1, 1):
                     return self._json(400, {"ok": False, "error": "need id and v=1|-1"})
+                action = "like" if v > 0 else "dislike"
+                mark_action(action, {"videoId": vid, "title": title, "artist": artist})
                 return self._json(200, vote(vid, title, artist, v))
 
             if p.path.startswith("/ui/"):
@@ -1589,12 +2182,32 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "error": str(e)})
 
+    def do_POST(self):
+        p = urlparse(self.path)
+        try:
+            if p.path == "/env":
+                payload = self._read_json()
+                if payload is None:
+                    return self._json(400, {"ok": False, "error": "invalid json"})
+                content = payload.get("content")
+                if content is None:
+                    return self._json(400, {"ok": False, "error": "missing content"})
+                path = write_env_file(str(content))
+                schedule_restart()
+                return self._json(200, {"ok": True, "path": path, "restart": True})
+            return self._json(404, {"ok": False, "error": "not found"})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": str(e)})
+
 def main():
     ensure_state_dir()
     mpv.start()
-    server = HTTPServer((HOST, PORT), Handler)
+    global httpd
+    httpd = HTTPServer((HOST, PORT), Handler)
     print(f"ytplayd listening on http://{HOST}:{PORT}")
-    server.serve_forever()
+    httpd.serve_forever()
 
 if __name__ == "__main__":
     main()

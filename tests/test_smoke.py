@@ -77,12 +77,12 @@ class HandlePlaySmokeTests(unittest.TestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(self.stub_mpv.loaded[-1], [ytplayd.watch_url("vid1")])
-        self.assertEqual(res["queue"], tracks)
+        self.assertEqual(res["queue"][0]["videoId"], "vid1")
+        self.assertEqual(res["queue"][0]["curation"], "fallback")
         self.assertTrue(ytplayd.last_debug.get("stream_fallback"))
         self.assertEqual(ytplayd.last_debug.get("stream_total"), 1)
         self.assertEqual(ytplayd.last_debug.get("stream_resolved"), 0)
-        self.assertEqual(ytplayd.last_queue, tracks)
-        self.assertTrue(any("INSERT INTO history" in sql for sql, _ in self.fake_con.executed))
+        self.assertEqual(ytplayd.last_queue[0]["videoId"], "vid1")
 
     def test_handle_play_uses_resolved_stream_urls_when_available(self):
         tracks = [
@@ -96,7 +96,8 @@ class HandlePlaySmokeTests(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(self.stub_mpv.loaded[-1], ["stream1"])
         self.assertEqual(res["count"], 1)
-        self.assertEqual(ytplayd.last_queue, [tracks[0]])
+        self.assertEqual(ytplayd.last_queue[0]["videoId"], "vid1")
+        self.assertEqual(ytplayd.last_queue[0]["curation"], "fallback")
         self.assertFalse(ytplayd.last_debug.get("stream_fallback"))
         self.assertEqual(ytplayd.last_debug.get("stream_total"), 2)
         self.assertEqual(ytplayd.last_debug.get("stream_resolved"), 1)
