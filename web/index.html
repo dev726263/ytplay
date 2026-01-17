@@ -250,16 +250,6 @@
       </div>
 
       <aside class="side-panels" id="sidePanels">
-        <section class="panel database" data-stagger id="dbPanel">
-          <div class="panel-head">
-            <h2>Database</h2>
-            <span class="pill subtle" id="dbStatus">loading...</span>
-          </div>
-          <div class="db-list" id="dbTables">
-            <div class="db-empty">Loading tables...</div>
-          </div>
-        </section>
-
         <section class="panel debug" data-stagger id="debugPanelWrap">
           <div class="panel-head">
             <h2>Debug</h2>
@@ -268,6 +258,16 @@
           <pre class="debug-panel" id="debugPanel">No debug info yet.</pre>
         </section>
       </aside>
+
+      <section class="panel database" data-stagger id="dbPanel">
+        <div class="panel-head">
+          <h2>Database</h2>
+          <span class="pill subtle" id="dbStatus">loading...</span>
+        </div>
+        <div class="db-list" id="dbTables">
+          <div class="db-empty">Loading tables...</div>
+        </div>
+      </section>
     </main>
 
     <footer class="footer">

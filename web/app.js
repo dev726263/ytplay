@@ -17,6 +17,7 @@ const loadingText = el("loadingText");
 const loadingLog = el("loadingLog");
 const debugPanel = el("debugPanel");
 const debugPanelWrap = el("debugPanelWrap");
+const sidePanels = el("sidePanels");
 const dbPanel = el("dbPanel");
 const dbTables = el("dbTables");
 const dbStatus = el("dbStatus");
@@ -79,11 +80,14 @@ let progressPoll = null;
 let progressLastId = 0;
 let progressActive = false;
 let debugUiEnabled = false;
+let dbTablesLoaded = false;
+let dbTablesLoading = false;
 
 const dbCache = new Map();
 const dbTableState = new Map();
 const dbTableEls = new Map();
 const dbTableSeq = new Map();
+const dbColumnWidths = new Map();
 
 const LOADING_MESSAGES = [
   "Warming up the curator...",
@@ -462,9 +466,19 @@ function normalizeSource(source) {
 }
 
 function setDebugUiEnabled(enabled) {
-  debugUiEnabled = Boolean(enabled);
+  const show = Boolean(enabled);
+  debugUiEnabled = show;
   if (debugPanelWrap) {
-    debugPanelWrap.style.display = debugUiEnabled ? "" : "none";
+    debugPanelWrap.style.display = show ? "" : "none";
+  }
+  if (sidePanels) {
+    sidePanels.style.display = show ? "" : "none";
+  }
+  if (dbPanel) {
+    dbPanel.style.display = show ? "" : "none";
+  }
+  if (show && !dbTablesLoaded) {
+    loadDbTables();
   }
 }
 
@@ -512,6 +526,46 @@ function dbCacheKey(table, offset, limit) {
   return `${table}:${offset}:${limit}`;
 }
 
+function getDbColumnWidth(table, column) {
+  const tableMap = dbColumnWidths.get(table);
+  if (!tableMap) return null;
+  return tableMap.get(column) || null;
+}
+
+function setDbColumnWidth(table, column, width) {
+  let tableMap = dbColumnWidths.get(table);
+  if (!tableMap) {
+    tableMap = new Map();
+    dbColumnWidths.set(table, tableMap);
+  }
+  tableMap.set(column, width);
+}
+
+function startDbColumnResize(event, table, column, colEl) {
+  event.preventDefault();
+  event.stopPropagation();
+  const startX = event.clientX;
+  const startWidth = colEl.getBoundingClientRect().width;
+  const minWidth = 80;
+  document.body.classList.add("db-resizing");
+
+  function onMove(moveEvent) {
+    const delta = moveEvent.clientX - startX;
+    const nextWidth = Math.max(minWidth, Math.round(startWidth + delta));
+    colEl.style.width = `${nextWidth}px`;
+    setDbColumnWidth(table, column, nextWidth);
+  }
+
+  function onUp() {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("db-resizing");
+  }
+
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
 function setDbContentMessage(content, message, className) {
   content.innerHTML = "";
   const el = document.createElement("div");
@@ -552,15 +606,33 @@ function updateDbControls(table, rows, total, offset, limit, loading) {
     loading || (typeof total === "number" && offset + limit >= total);
 }
 
-function renderDbGrid(content, columns, rows) {
+function renderDbGrid(content, table, columns, rows) {
   content.innerHTML = "";
-  const table = document.createElement("table");
-  table.className = "db-grid";
+  const grid = document.createElement("table");
+  grid.className = "db-grid";
+  const colgroup = document.createElement("colgroup");
+  const colEls = [];
+  columns.forEach((col) => {
+    const colEl = document.createElement("col");
+    const width = getDbColumnWidth(table, col);
+    if (width) {
+      colEl.style.width = `${width}px`;
+    }
+    colgroup.appendChild(colEl);
+    colEls.push(colEl);
+  });
+  grid.appendChild(colgroup);
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  columns.forEach((col) => {
+  columns.forEach((col, index) => {
     const th = document.createElement("th");
     th.textContent = col;
+    const resizer = document.createElement("span");
+    resizer.className = "db-resizer";
+    resizer.addEventListener("mousedown", (event) =>
+      startDbColumnResize(event, table, col, colEls[index])
+    );
+    th.appendChild(resizer);
     headRow.appendChild(th);
   });
   thead.appendChild(headRow);
@@ -580,9 +652,9 @@ function renderDbGrid(content, columns, rows) {
     });
     tbody.appendChild(tr);
   });
-  table.appendChild(thead);
-  table.appendChild(tbody);
-  content.appendChild(table);
+  grid.appendChild(thead);
+  grid.appendChild(tbody);
+  content.appendChild(grid);
 }
 
 async function loadDbRows(table, options = {}) {
@@ -602,7 +674,7 @@ async function loadDbRows(table, options = {}) {
     if (!rows.length) {
       setDbContentMessage(elements.content, "No records found.", "db-empty");
     } else {
-      renderDbGrid(elements.content, columns, rows);
+      renderDbGrid(elements.content, table, columns, rows);
     }
     updateDbControls(table, rows, cached.total, offset, limit, false);
     return;
@@ -632,7 +704,7 @@ async function loadDbRows(table, options = {}) {
     if (!rows.length) {
       setDbContentMessage(elements.content, "No records found.", "db-empty");
     } else {
-      renderDbGrid(elements.content, columns, rows);
+      renderDbGrid(elements.content, table, columns, rows);
     }
     updateDbControls(table, rows, data.total, offset, limit, false);
   } catch (err) {
@@ -776,6 +848,9 @@ function renderDbTables(tables) {
 
 async function loadDbTables() {
   if (!dbPanel || !dbTables) return;
+  if (!debugUiEnabled) return;
+  if (dbTablesLoading) return;
+  dbTablesLoading = true;
   setDbStatus("loading...");
   dbTables.innerHTML = "";
   try {
@@ -784,10 +859,12 @@ async function loadDbTables() {
     if (!tables.length) {
       setDbStatus("empty");
       setDbContentMessage(dbTables, "No tables found.", "db-empty");
+      dbTablesLoaded = true;
       return;
     }
     setDbStatus("ready");
     renderDbTables(tables);
+    dbTablesLoaded = true;
   } catch (err) {
     setDbStatus("error", true);
     dbTables.innerHTML = "";
@@ -803,6 +880,8 @@ async function loadDbTables() {
     wrap.appendChild(text);
     wrap.appendChild(retry);
     dbTables.appendChild(wrap);
+  } finally {
+    dbTablesLoading = false;
   }
 }
 
@@ -1127,9 +1206,8 @@ function initProgressControls() {
 document.addEventListener("DOMContentLoaded", () => {
   addStagger();
   initProgressControls();
-  document.body.classList.add("is-ready");
   setDebugUiEnabled(false);
-  loadDbTables();
+  document.body.classList.add("is-ready");
   const cached = loadStoredState();
   if (cached && cached.data) {
     applyState(cached.data, { cached: true, savedAt: cached.saved_at });

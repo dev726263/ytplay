@@ -203,7 +203,9 @@ body.is-ready {
   margin: 0 auto;
   display: grid;
   grid-template-columns: 420px minmax(560px, 1.55fr) minmax(320px, 0.95fr);
-  grid-template-areas: "search main debug";
+  grid-template-areas:
+    "search main debug"
+    "database database database";
   gap: 24px;
   padding: 12px 28px 36px;
   align-items: start;
@@ -310,6 +312,11 @@ body.is-ready .panel[data-stagger] {
   flex-direction: column;
   gap: 24px;
   min-width: 0;
+}
+
+.database {
+  grid-area: database;
+  width: 100%;
 }
 
 .queue {
@@ -940,7 +947,8 @@ body.is-ready .panel[data-stagger] {
 }
 
 .db-grid {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 12px;
@@ -954,6 +962,10 @@ body.is-ready .panel[data-stagger] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.db-grid th {
+  position: relative;
 }
 
 .db-grid th {
@@ -984,6 +996,20 @@ body.is-ready .panel[data-stagger] {
   margin-top: 8px;
 }
 
+.db-resizer {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+body.db-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .footer {
   display: flex;
   justify-content: space-between;
@@ -997,7 +1023,8 @@ body.is-ready .panel[data-stagger] {
     grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
     grid-template-areas:
       "search main"
-      "debug debug";
+      "debug debug"
+      "database database";
   }
 
   .queue {
@@ -1015,7 +1042,8 @@ body.is-ready .panel[data-stagger] {
     grid-template-areas:
       "search"
       "main"
-      "debug";
+      "debug"
+      "database";
   }
 
   .learning-row {
